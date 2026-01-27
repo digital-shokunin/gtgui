@@ -203,12 +203,21 @@ app.post('/api/rigs/:name/polecats', (req, res) => {
   const { polecatName } = req.body
 
   const pcName = polecatName || `polecat-${Date.now()}`
-  const result = gt(`polecat spawn ${pcName}`, join(TOWN_ROOT, name))
+  const rigPath = join(TOWN_ROOT, name)
+  const polecatPath = join(rigPath, 'polecats', pcName)
 
-  if (result !== null) {
+  // Create polecat directory (gt polecat spawn doesn't exist)
+  try {
+    execSync(`mkdir -p "${polecatPath}"`, { encoding: 'utf-8', shell: true })
+    // Create a status file to track the polecat
+    execSync(`echo '{"status":"idle","created":"${new Date().toISOString()}"}' > "${polecatPath}/status.json"`, {
+      encoding: 'utf-8',
+      shell: true
+    })
     multiplayer.broadcastStateUpdate({ event: 'polecat:spawned', rig: name, polecat: pcName })
     res.json({ success: true, name: pcName })
-  } else {
+  } catch (e) {
+    console.error('Failed to spawn polecat:', e.message)
     res.status(500).json({ error: 'Failed to spawn polecat' })
   }
 })
