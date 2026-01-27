@@ -111,12 +111,15 @@ app.post('/api/rigs', (req, res) => {
     return res.status(400).json({ error: 'Invalid rig name. Use alphanumeric, dashes, or underscores.' })
   }
 
-  const result = gt(`rig create ${name}`)
-  if (result !== null) {
+  // Create rig directory (gt rig create doesn't exist, so we just mkdir)
+  const rigPath = join(TOWN_ROOT, name)
+  try {
+    execSync(`mkdir -p "${rigPath}"`, { encoding: 'utf-8', shell: true })
     // Broadcast new rig to all connected users
     multiplayer.broadcastStateUpdate({ event: 'rig:created', rig: name })
     res.json({ success: true, name })
-  } else {
+  } catch (e) {
+    console.error('Failed to create rig:', e.message)
     res.status(500).json({ error: 'Failed to create rig' })
   }
 })
