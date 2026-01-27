@@ -251,11 +251,41 @@ app.post('/api/sling', (req, res) => {
     return res.status(400).json({ error: 'Missing agent or issue' })
   }
 
-  const result = gt(`sling ${issue} --to ${agent}`)
-  if (result) {
-    res.json({ success: true, message: result })
+  // Parse agent path (e.g., "rigname/polecats/polecatname" or just "polecatname")
+  const parts = agent.split('/')
+  let rigName, polecatName
+  if (parts.length >= 3) {
+    rigName = parts[0]
+    polecatName = parts[parts.length - 1]
   } else {
-    res.status(500).json({ error: 'Sling failed' })
+    polecatName = agent
+    rigName = 'default'
+  }
+
+  // Update polecat status to working
+  const statusPath = join(TOWN_ROOT, rigName, 'polecats', polecatName, 'status.json')
+  try {
+    const status = {
+      status: 'working',
+      issue: issue,
+      assignedAt: new Date().toISOString(),
+      progress: 0
+    }
+    execSync(`mkdir -p "$(dirname "${statusPath}")"`, { encoding: 'utf-8', shell: true })
+    execSync(`echo '${JSON.stringify(status)}' > "${statusPath}"`, { encoding: 'utf-8', shell: true })
+
+    // Broadcast status update
+    multiplayer.broadcastStateUpdate({
+      event: 'polecat:working',
+      rig: rigName,
+      polecat: polecatName,
+      issue: issue
+    })
+
+    res.json({ success: true, message: `Assigned ${issue} to ${polecatName}`, status })
+  } catch (e) {
+    console.error('Sling failed:', e.message)
+    res.status(500).json({ error: 'Sling failed: ' + e.message })
   }
 })
 
@@ -315,34 +345,40 @@ app.get('/api/feed', (req, res) => {
 // Helper: Get polecats for a specific rig
 function getPolecatsForRig(rigName) {
   const polecats = []
-  const rigPath = join(TOWN_ROOT, rigName, 'polecats')
+  const polecatsPath = join(TOWN_ROOT, rigName, 'polecats')
 
   try {
-    const sessions = execSync(`tmux list-sessions -F "#{session_name}" 2>/dev/null || true`, {
+    // List polecat directories
+    const dirs = execSync(`ls -1 "${polecatsPath}" 2>/dev/null || true`, {
       encoding: 'utf-8'
-    })
+    }).trim()
 
-    for (const session of sessions.split('\n').filter(Boolean)) {
-      if (session.includes(rigName) && session.includes('polecat')) {
-        // Extract polecat name from session
-        const parts = session.split('-')
-        const name = parts[parts.length - 1]
+    if (!dirs) return polecats
 
-        // Try to get hook status
-        const hookResult = gt(`hook --agent ${rigName}/polecats/${name}`)
-        const hook = hookResult?.trim() || null
+    for (const name of dirs.split('\n').filter(Boolean)) {
+      const statusFile = join(polecatsPath, name, 'status.json')
+      let status = { status: 'idle' }
 
-        polecats.push({
-          name,
-          rig: rigName,
-          session,
-          status: hook ? 'working' : 'idle',
-          hook
+      try {
+        const content = execSync(`cat "${statusFile}" 2>/dev/null || echo '{}'`, {
+          encoding: 'utf-8'
         })
+        status = JSON.parse(content) || { status: 'idle' }
+      } catch (e) {
+        // No status file, default to idle
       }
+
+      polecats.push({
+        name,
+        rig: rigName,
+        status: status.status || 'idle',
+        issue: status.issue || null,
+        assignedAt: status.assignedAt || null,
+        progress: status.progress || 0
+      })
     }
   } catch (e) {
-    // No tmux sessions
+    // No polecats directory
   }
 
   return polecats
