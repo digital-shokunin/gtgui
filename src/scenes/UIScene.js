@@ -1512,26 +1512,33 @@ export class UIScene extends Phaser.Scene {
         return
       }
 
-      // Project exists - find polecats
+      // Project exists - find polecats and auto-assign
       this.currentProject = projectName
       try {
         const polecats = await this.api.getPolecats(projectName)
         if (polecats.length === 0) {
-          this.addMayorMessage('mayor', `"${projectName}" has no polecats yet. Shall I spawn one to work on this task? (yes/no)`)
-          this.mayorState = 'awaiting_spec_spawn_confirm'
-        } else if (polecats.length === 1) {
-          // Auto-assign to the only polecat
-          this.currentPolecat = polecats[0].name
+          // No polecats - spawn one automatically
+          this.addMayorMessage('mayor', `Spawning a polecat for "${projectName}"...`)
+          const result = await this.api.spawnPolecat(projectName)
+          if (this.gameScene) {
+            this.gameScene.addPolecatToVillage(projectName, result.name)
+          }
+          this.currentPolecat = result.name
           await this.slingSpecToPolecat()
         } else {
-          // Multiple polecats - let user choose
-          const list = polecats.map((p, i) => `${i + 1}. ${p.name} (${p.status})`).join('\n')
-          this.addMayorMessage('mayor', `Which polecat should work on this?\n\n${list}\n\n(Enter name or number)`)
-          this.availablePolecats = polecats
-          this.mayorState = 'awaiting_spec_polecat'
+          // Auto-assign to an idle polecat, or the least busy one
+          const idlePolecat = polecats.find(p => p.status === 'idle')
+          if (idlePolecat) {
+            this.currentPolecat = idlePolecat.name
+          } else {
+            // All busy - just pick the first one
+            this.currentPolecat = polecats[0].name
+            this.addMayorMessage('mayor', `All polecats are busy, but I'll queue this for ${this.currentPolecat}...`)
+          }
+          await this.slingSpecToPolecat()
         }
       } catch (e) {
-        this.addMayorMessage('mayor', `Error getting polecats: ${e.message}`)
+        this.addMayorMessage('mayor', `Error: ${e.message}`)
         this.mayorState = null
       }
       return
@@ -1563,56 +1570,6 @@ export class UIScene extends Phaser.Scene {
         this.addMayorMessage('mayor', "No problem! Which existing project should I use for this task?")
         this.mayorState = 'awaiting_spec_project'
       }
-      return
-    }
-
-    if (this.mayorState === 'awaiting_spec_spawn_confirm') {
-      if (lower.includes('yes') || lower.includes('sure') || lower.includes('ok') || lower.includes('y')) {
-        this.addMayorMessage('mayor', "Spawning a polecat...")
-        try {
-          const result = await this.api.spawnPolecat(this.currentProject)
-          if (this.gameScene) {
-            this.gameScene.addPolecatToVillage(this.currentProject, result.name)
-          }
-          this.currentPolecat = result.name
-          await this.slingSpecToPolecat()
-        } catch (e) {
-          this.addMayorMessage('mayor', `Spawn failed: ${e.message}`)
-          this.mayorState = null
-        }
-      } else {
-        this.addMayorMessage('mayor', "Alright, the task is saved. Let me know when you have a polecat ready!")
-        this.mayorState = null
-      }
-      return
-    }
-
-    if (this.mayorState === 'awaiting_spec_polecat') {
-      // User is selecting which polecat to assign the spec to
-      const polecats = this.availablePolecats || []
-
-      // Try to match by number
-      const numMatch = text.match(/^(\d+)$/)
-      if (numMatch) {
-        const idx = parseInt(numMatch[1]) - 1
-        if (idx >= 0 && idx < polecats.length) {
-          this.currentPolecat = polecats[idx].name
-          await this.slingSpecToPolecat()
-          return
-        }
-      }
-
-      // Try to match by name
-      const matchedPolecat = polecats.find(p =>
-        p.name.toLowerCase().includes(lower) || lower.includes(p.name.toLowerCase())
-      )
-      if (matchedPolecat) {
-        this.currentPolecat = matchedPolecat.name
-        await this.slingSpecToPolecat()
-        return
-      }
-
-      this.addMayorMessage('mayor', "I didn't recognize that polecat. Please enter the number or name from the list.")
       return
     }
 
