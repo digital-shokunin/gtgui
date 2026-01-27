@@ -1231,7 +1231,7 @@ export class UIScene extends Phaser.Scene {
     } else if (status === 'working') {
       buttons = [
         { label: 'VIEW PROGRESS', action: 'hook', color: 0x3498DB, icon: '?' },
-        { label: 'SEND MESSAGE', action: 'mail', color: 0x9B59B6, icon: '@' },
+        { label: 'TEST STUCK', action: 'teststuck', color: 0xE67E22, icon: '🦭' },
         { label: 'STOP WORK', action: 'stop', color: 0xE74C3C, icon: '!' }
       ]
     } else if (status === 'stuck') {
@@ -1666,6 +1666,37 @@ export class UIScene extends Phaser.Scene {
       case 'complete':
         this.doMarkComplete(agentId)
         break
+      case 'teststuck':
+        this.doTestStuck(agentId)
+        break
+    }
+  }
+
+  async doTestStuck(agentId) {
+    const confirm = await this.showModal({
+      title: 'TEST SEA LION',
+      message: `Simulate ${agentId} getting stuck?\n\nThis will trigger the sea lion attack animation!`,
+      showCancel: true
+    })
+    if (!confirm) return
+
+    try {
+      this.statusText.setText('Simulating stuck...')
+      await this.api.simulateStuck(agentId)
+      this.statusText.setText('Sea lion incoming!')
+
+      // Refresh to trigger the animation
+      if (this.gameScene) {
+        this.gameScene.refreshState()
+      }
+      this.hideSelectionCard()
+    } catch (e) {
+      this.statusText.setText('Simulation failed')
+      await this.showModal({
+        title: 'ERROR',
+        message: e.message,
+        showCancel: false
+      })
     }
   }
 
@@ -1703,31 +1734,73 @@ export class UIScene extends Phaser.Scene {
       const result = await this.api.getHook(agentId)
 
       let message = ''
-      if (result.hook) {
+      let title = 'POLECAT STATUS'
+
+      if (result.status === 'stuck') {
+        title = 'POLECAT NEEDS HELP!'
+        message += `Task: ${result.hook || 'Unknown task'}\n\n`
+        message += `Status: STUCK\n`
+
+        if (result.stuckReason === 'tokens') {
+          message += `Reason: Exceeded token limit\n`
+          message += `Tokens used: ${(result.tokensUsed || 0).toLocaleString()}\n`
+        } else if (result.stuckReason === 'time') {
+          message += `Reason: Task running too long\n`
+        } else {
+          message += `Reason: ${result.stuckReason || 'Unknown'}\n`
+        }
+
+        if (result.stuckAt) {
+          const stuckTime = new Date(result.stuckAt)
+          const minsAgo = Math.round((Date.now() - stuckTime.getTime()) / 60000)
+          message += `Stuck for: ${minsAgo} minutes\n`
+        }
+
+        message += `\nOptions: Reassign work or mark complete.`
+
+      } else if (result.hook) {
+        title = 'POLECAT PROGRESS'
         message += `Task: ${result.hook}\n\n`
         message += `Status: ${result.status || 'unknown'}\n`
+
         if (result.assignedAt) {
           const assigned = new Date(result.assignedAt)
           const elapsed = Math.round((Date.now() - assigned.getTime()) / 60000)
           message += `Working for: ${elapsed} minutes\n`
         }
+
+        if (result.tokensUsed) {
+          message += `Tokens used: ${result.tokensUsed.toLocaleString()}\n`
+        }
+
         if (result.progress !== undefined) {
           message += `Progress: ${result.progress}%`
         }
+
+      } else if (result.completedTask) {
+        title = 'POLECAT IDLE'
+        message += `Last completed: ${result.completedTask}\n`
+        if (result.completedAt) {
+          const completed = new Date(result.completedAt)
+          message += `Completed: ${completed.toLocaleString()}\n`
+        }
+        message += `\nReady for new work!`
+
       } else {
-        message = 'No active task - polecat is idle'
+        title = 'POLECAT IDLE'
+        message = 'No active task - polecat is ready for work!'
       }
 
-      this.statusText.setText('Progress loaded')
+      this.statusText.setText('Status loaded')
       await this.showModal({
-        title: 'POLECAT PROGRESS',
+        title: title,
         message: message,
         showCancel: false
       })
     } catch (e) {
-      this.statusText.setText('Failed to load progress')
+      this.statusText.setText('Failed to load status')
       await this.showModal({
-        title: 'PROGRESS ERROR',
+        title: 'STATUS ERROR',
         message: e.message,
         showCancel: false
       })

@@ -547,13 +547,81 @@ app.get('/api/agents/:id/hook', (req, res) => {
         hook: status.issue || status.task || null,
         status: status.status,
         assignedAt: status.assignedAt,
-        progress: status.progress || 0
+        progress: status.progress || 0,
+        tokensUsed: status.tokensUsed || 0,
+        stuckReason: status.stuckReason || null,
+        stuckAt: status.stuckAt || null,
+        completedTask: status.completedTask || null,
+        completedAt: status.completedAt || null
       })
     } catch (e) {
       res.json({ hook: null, status: 'idle' })
     }
   } else {
     res.json({ hook: null, status: 'idle' })
+  }
+})
+
+// POST /api/agents/:id/simulate-stuck - Simulate agent getting stuck (for testing)
+app.post('/api/agents/:id/simulate-stuck', (req, res) => {
+  const agentId = req.params.id
+  const parts = agentId.split('/')
+
+  let rigName, polecatName
+  if (parts.length >= 3) {
+    rigName = parts[0]
+    polecatName = parts[parts.length - 1]
+  } else {
+    polecatName = agentId
+    // Find the rig
+    const rigs = listRigs()
+    for (const r of rigs) {
+      const statusPath = join(TOWN_ROOT, r.name, 'polecats', polecatName, 'status.json')
+      if (existsSync(statusPath)) {
+        rigName = r.name
+        break
+      }
+    }
+  }
+
+  if (!rigName) {
+    return res.status(404).json({ error: 'Agent not found' })
+  }
+
+  const statusPath = join(TOWN_ROOT, rigName, 'polecats', polecatName, 'status.json')
+
+  try {
+    let status = { status: 'idle' }
+    if (existsSync(statusPath)) {
+      const content = readFileSync(statusPath, 'utf-8')
+      status = JSON.parse(content)
+    }
+
+    // Mark as stuck
+    status.status = 'stuck'
+    status.stuckReason = 'tokens'
+    status.stuckAt = new Date().toISOString()
+    status.tokensUsed = 25001  // Over the default threshold
+
+    writeFileSync(statusPath, JSON.stringify(status, null, 2))
+
+    multiplayer.broadcastStateUpdate({
+      event: 'polecat:stuck',
+      rig: rigName,
+      polecat: polecatName,
+      reason: 'tokens'
+    })
+
+    multiplayer.broadcastNotification({
+      type: 'stuck',
+      message: `${polecatName} exceeded token limit!`,
+      agent: polecatName,
+      rig: rigName
+    })
+
+    res.json({ success: true, message: `${polecatName} is now stuck (simulated)` })
+  } catch (e) {
+    res.status(500).json({ error: e.message })
   }
 })
 

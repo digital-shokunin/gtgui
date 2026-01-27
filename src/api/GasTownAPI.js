@@ -121,4 +121,11 @@ export class GasTownAPI {
       method: 'POST'
     })
   }
+
+  // Simulate agent getting stuck (for testing sea lion animation)
+  async simulateStuck(agentId) {
+    return this.request(`/agents/${agentId}/simulate-stuck`, {
+      method: 'POST'
+    })
+  }
 }
