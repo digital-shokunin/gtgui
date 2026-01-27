@@ -4,6 +4,7 @@ import { createServer } from 'http'
 import { execSync, exec } from 'child_process'
 import { fileURLToPath } from 'url'
 import { dirname, join } from 'path'
+import { writeFileSync, readFileSync, mkdirSync, existsSync } from 'fs'
 import { setupAuth, getSessionMiddleware } from './src/server/auth.js'
 import { MultiplayerServer } from './src/server/multiplayer.js'
 
@@ -236,12 +237,15 @@ app.post('/api/rigs/:name/polecats', (req, res) => {
 
   // Create polecat directory (gt polecat spawn doesn't exist)
   try {
-    execSync(`mkdir -p "${polecatPath}"`, { encoding: 'utf-8', shell: true })
-    // Create a status file to track the polecat
-    execSync(`echo '{"status":"idle","created":"${new Date().toISOString()}"}' > "${polecatPath}/status.json"`, {
-      encoding: 'utf-8',
-      shell: true
-    })
+    // Create polecat directory and status file
+    if (!existsSync(polecatPath)) {
+      mkdirSync(polecatPath, { recursive: true })
+    }
+    const initialStatus = {
+      status: 'idle',
+      created: new Date().toISOString()
+    }
+    writeFileSync(join(polecatPath, 'status.json'), JSON.stringify(initialStatus, null, 2))
     multiplayer.broadcastStateUpdate({ event: 'polecat:spawned', rig: name, polecat: pcName })
     res.json({ success: true, name: pcName })
   } catch (e) {
@@ -299,8 +303,12 @@ app.post('/api/sling', (req, res) => {
       assignedAt: new Date().toISOString(),
       progress: 0
     }
-    execSync(`mkdir -p "$(dirname "${statusPath}")"`, { encoding: 'utf-8', shell: true })
-    execSync(`echo '${JSON.stringify(status)}' > "${statusPath}"`, { encoding: 'utf-8', shell: true })
+    // Use Node.js fs to avoid shell escaping issues with special characters
+    const statusDir = dirname(statusPath)
+    if (!existsSync(statusDir)) {
+      mkdirSync(statusDir, { recursive: true })
+    }
+    writeFileSync(statusPath, JSON.stringify(status, null, 2))
 
     // Broadcast status update
     multiplayer.broadcastStateUpdate({
@@ -349,18 +357,20 @@ app.get('/api/agents/:id/hook', (req, res) => {
     const rigs = listRigs()
     for (const rig of rigs) {
       const statusPath = join(TOWN_ROOT, rig.name, 'polecats', polecatName, 'status.json')
-      try {
-        const content = execSync(`cat "${statusPath}" 2>/dev/null`, { encoding: 'utf-8' })
-        const status = JSON.parse(content)
-        res.json({
-          hook: status.issue || status.task || null,
-          status: status.status,
-          assignedAt: status.assignedAt,
-          progress: status.progress || 0
-        })
-        return
-      } catch (e) {
-        // Not in this rig, continue
+      if (existsSync(statusPath)) {
+        try {
+          const content = readFileSync(statusPath, 'utf-8')
+          const status = JSON.parse(content)
+          res.json({
+            hook: status.issue || status.task || null,
+            status: status.status,
+            assignedAt: status.assignedAt,
+            progress: status.progress || 0
+          })
+          return
+        } catch (e) {
+          // Parse error, continue
+        }
       }
     }
     res.json({ hook: null, status: 'unknown' })
@@ -369,16 +379,20 @@ app.get('/api/agents/:id/hook', (req, res) => {
 
   // Read status from file
   const statusPath = join(TOWN_ROOT, rigName, 'polecats', polecatName, 'status.json')
-  try {
-    const content = execSync(`cat "${statusPath}" 2>/dev/null`, { encoding: 'utf-8' })
-    const status = JSON.parse(content)
-    res.json({
-      hook: status.issue || status.task || null,
-      status: status.status,
-      assignedAt: status.assignedAt,
-      progress: status.progress || 0
-    })
-  } catch (e) {
+  if (existsSync(statusPath)) {
+    try {
+      const content = readFileSync(statusPath, 'utf-8')
+      const status = JSON.parse(content)
+      res.json({
+        hook: status.issue || status.task || null,
+        status: status.status,
+        assignedAt: status.assignedAt,
+        progress: status.progress || 0
+      })
+    } catch (e) {
+      res.json({ hook: null, status: 'idle' })
+    }
+  } else {
     res.json({ hook: null, status: 'idle' })
   }
 })
