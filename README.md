@@ -1,6 +1,6 @@
 # Gas Town UI
 
-Age of Empires-style browser GUI for Gas Town multi-agent orchestration.
+Club Penguin-style browser GUI for Gas Town multi-agent orchestration.
 
 ## Features
 
