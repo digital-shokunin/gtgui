@@ -130,13 +130,44 @@ app.post('/api/rigs/:name/clone', (req, res) => {
     return res.status(400).json({ error: 'Repository URL required' })
   }
 
+  // Extract repo name from URL for subdirectory
+  const repoName = repo.split('/').pop().replace('.git', '') || 'repo'
+
   // Ensure rig directory exists
   const rigPath = join(TOWN_ROOT, name)
+  const clonePath = join(rigPath, repoName)
+
   try {
     execSync(`mkdir -p "${rigPath}"`, { encoding: 'utf-8', shell: true })
   } catch (e) {
     console.error('Failed to create rig directory:', e.message)
     return res.status(500).json({ error: 'Failed to create rig directory' })
+  }
+
+  // Check if clone path already exists
+  try {
+    const exists = execSync(`test -d "${clonePath}" && echo "exists" || echo "no"`, {
+      encoding: 'utf-8',
+      shell: true
+    }).trim()
+
+    if (exists === 'exists') {
+      // Directory exists - check if it's a git repo and pull instead
+      try {
+        execSync(`cd "${clonePath}" && git pull`, {
+          encoding: 'utf-8',
+          timeout: 60000,
+          shell: true
+        })
+        multiplayer.broadcastStateUpdate({ event: 'repo:updated', rig: name, repo })
+        return res.json({ success: true, repo, action: 'pulled' })
+      } catch (pullErr) {
+        // Pull failed, remove and re-clone
+        execSync(`rm -rf "${clonePath}"`, { encoding: 'utf-8', shell: true })
+      }
+    }
+  } catch (e) {
+    // Directory doesn't exist, proceed with clone
   }
 
   // Try gt clone first, fallback to git clone
@@ -147,7 +178,7 @@ app.post('/api/rigs/:name/clone', (req, res) => {
   if (result === null) {
     try {
       const gitBranchArg = branch ? `-b ${branch}` : ''
-      result = execSync(`git clone ${gitBranchArg} "${repo}" .`, {
+      result = execSync(`git clone ${gitBranchArg} "${repo}"`, {
         cwd: rigPath,
         encoding: 'utf-8',
         timeout: 120000,  // 2 min timeout for large repos
