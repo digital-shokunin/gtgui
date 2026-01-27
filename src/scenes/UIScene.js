@@ -2485,31 +2485,39 @@ export class UIScene extends Phaser.Scene {
       return
     }
 
-    const villages = this.gameScene?.villages || []
-    // Filter out hub/system villages
-    const projects = villages.filter(v => !v.isHub && v.name !== 'Town Center')
+    this.addMayorMessage('mayor', `Got it! I'll find someone to work on:\n"${this.pendingSpec.substring(0, 60)}${this.pendingSpec.length > 60 ? '...' : ''}"`)
+
+    // Get projects from API (more reliable than gameScene)
+    let projects = []
+    try {
+      const rigs = await this.api.getRigs()
+      // Filter out system rigs
+      projects = rigs.filter(r => !['mayor', 'deacon', 'refinery'].includes(r.name))
+    } catch (e) {
+      console.error('Failed to get rigs:', e)
+    }
 
     // If no projects, create a default one
     if (projects.length === 0) {
-      this.addMayorMessage('mayor', `Creating a new project for this task...`)
+      this.addMayorMessage('mayor', `No projects yet - creating one...`)
       try {
-        const projectName = 'project-' + Date.now()
+        const projectName = 'my-project'
         await this.api.createRig(projectName)
         if (this.gameScene) {
           this.gameScene.addVillage(projectName)
         }
         this.currentProject = projectName
+        this.addMayorMessage('mayor', `Created project "${projectName}"!`)
       } catch (e) {
         this.addMayorMessage('mayor', `Failed to create project: ${e.message}`)
         this.mayorState = null
+        this.pendingSpec = null
         return
       }
     } else if (projects.length === 1) {
-      // Only one project - use it
       this.currentProject = projects[0].name
     } else {
-      // Multiple projects - use the most recent or current context
-      // Prefer currentProject if set, otherwise use the last one
+      // Multiple projects - prefer currentProject if valid
       if (this.currentProject && projects.find(p => p.name === this.currentProject)) {
         // Keep current project
       } else {
@@ -2517,7 +2525,7 @@ export class UIScene extends Phaser.Scene {
       }
     }
 
-    this.addMayorMessage('mayor', `Assigning to "${this.currentProject}"...`)
+    this.addMayorMessage('mayor', `Using project "${this.currentProject}"...`)
 
     // Now find or spawn a polecat
     try {
@@ -2527,11 +2535,19 @@ export class UIScene extends Phaser.Scene {
       const idlePolecat = polecats.find(p => p.status === 'idle')
 
       if (idlePolecat) {
-        // Use the idle polecat
         this.currentPolecat = idlePolecat.name
+        this.addMayorMessage('mayor', `Found idle polecat: ${idlePolecat.name}`)
+      } else if (polecats.length === 0) {
+        // No polecats - spawn one
+        this.addMayorMessage('mayor', `No polecats yet - spawning one...`)
+        const result = await this.api.spawnPolecat(this.currentProject)
+        if (this.gameScene) {
+          this.gameScene.addPolecatToVillage(this.currentProject, result.name)
+        }
+        this.currentPolecat = result.name
       } else {
-        // No idle polecats - spawn a new one to handle this task
-        this.addMayorMessage('mayor', `All polecats are busy. Spawning a new one...`)
+        // All polecats busy - spawn another
+        this.addMayorMessage('mayor', `All ${polecats.length} polecats busy - spawning another...`)
         const result = await this.api.spawnPolecat(this.currentProject)
         if (this.gameScene) {
           this.gameScene.addPolecatToVillage(this.currentProject, result.name)
@@ -2541,8 +2557,9 @@ export class UIScene extends Phaser.Scene {
 
       await this.slingSpecToPolecat()
     } catch (e) {
-      this.addMayorMessage('mayor', `Error: ${e.message}`)
+      this.addMayorMessage('mayor', `Error assigning task: ${e.message}`)
       this.mayorState = null
+      this.pendingSpec = null
     }
   }
 
