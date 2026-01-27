@@ -840,7 +840,7 @@ export class UIScene extends Phaser.Scene {
           inputType: 'text',
           placeholder: 'https://github.com/user/repo'
         })
-        if (repo) {
+        if (repo && repo.trim()) {
           try {
             this.statusText.setText('Cloning...')
             await this.api.cloneRepo(rigName, repo)
@@ -1817,7 +1817,8 @@ export class UIScene extends Phaser.Scene {
       })
       okZone.on('pointerdown', () => {
         cleanup()
-        resolve(inputValue || true)
+        // Return inputValue for input modals, true for confirm modals
+        resolve(options.inputType ? inputValue : true)
       })
 
       this.modal.add([okBtn, okText, okZone])
@@ -1899,8 +1900,8 @@ export class UIScene extends Phaser.Scene {
       console.log(`Created rig: ${rigName}`)
 
       // Step 2: Clone repo if provided
-      if (repoUrl) {
-        await this.api.cloneRepo(rigName, repoUrl)
+      if (repoUrl && repoUrl.trim()) {
+        await this.api.cloneRepo(rigName, repoUrl.trim())
         console.log(`Cloned repo: ${repoUrl}`)
       }
 
