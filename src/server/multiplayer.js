@@ -81,11 +81,69 @@ export class MultiplayerServer {
         this.handleCommand(socket, 'stop', data)
       })
 
+      // User watching an agent
+      socket.on('watching', (data) => {
+        this.handleWatching(socket, data)
+      })
+
+      // User status change
+      socket.on('status:change', (data) => {
+        this.handleStatusChange(socket, data)
+      })
+
       // Disconnect
       socket.on('disconnect', () => {
         this.handleDisconnect(socket)
       })
     })
+
+    // Check for away users every 30 seconds
+    setInterval(() => this.checkAwayUsers(), 30000)
+  }
+
+  handleWatching(socket, data) {
+    const user = this.users.get(socket.userId)
+    if (!user) return
+
+    user.watching = data.agentId || null
+    user.lastActivity = Date.now()
+
+    // Broadcast watching status
+    this.io.to('town').emit('user:watching', {
+      userId: socket.userId,
+      agentId: data.agentId
+    })
+  }
+
+  handleStatusChange(socket, data) {
+    const user = this.users.get(socket.userId)
+    if (!user) return
+
+    const validStatuses = ['active', 'away', 'busy']
+    if (validStatuses.includes(data.status)) {
+      user.status = data.status
+      user.lastActivity = Date.now()
+
+      this.io.to('town').emit('user:status', {
+        userId: socket.userId,
+        status: data.status
+      })
+    }
+  }
+
+  checkAwayUsers() {
+    const awayThreshold = 5 * 60 * 1000  // 5 minutes
+    const now = Date.now()
+
+    for (const [userId, user] of this.users) {
+      if (user.status === 'active' && now - user.lastActivity > awayThreshold) {
+        user.status = 'away'
+        this.io.to('town').emit('user:status', {
+          userId,
+          status: 'away'
+        })
+      }
+    }
   }
 
   handleJoin(socket) {
@@ -123,7 +181,7 @@ export class MultiplayerServer {
     // For now, use socket.userId as name
     if (passportUser && typeof passportUser === 'object') {
       name = passportUser.displayName || passportUser.username || socket.userId
-      avatar = passportUser.avatar
+      avatar = passportUser.avatar || passportUser.photos?.[0]?.value
     }
 
     // Assign color
@@ -138,7 +196,10 @@ export class MultiplayerServer {
       color,
       cursor: { x: 0, y: 0 },
       selection: [],
-      lastUpdate: Date.now()
+      watching: null,  // Currently watched agent
+      status: 'active',  // active, away, offline
+      lastUpdate: Date.now(),
+      lastActivity: Date.now()
     }
   }
 
@@ -202,7 +263,9 @@ export class MultiplayerServer {
       avatar: u.avatar,
       color: u.color,
       cursor: u.cursor,
-      selection: u.selection
+      selection: u.selection,
+      watching: u.watching,
+      status: u.status
     }))
   }
 
@@ -218,5 +281,20 @@ export class MultiplayerServer {
       timestamp: new Date().toISOString(),
       ...notification
     })
+  }
+
+  // Broadcast activity feed event to all users
+  broadcastFeedEvent(event) {
+    this.io.to('town').emit('feed:event', event)
+  }
+
+  // Broadcast task queue update to all users
+  broadcastTaskQueueUpdate(queue) {
+    this.io.to('town').emit('taskqueue:update', queue)
+  }
+
+  // Broadcast cost update to all users
+  broadcastCostUpdate(costs) {
+    this.io.to('town').emit('costs:update', costs)
   }
 }

@@ -42,8 +42,159 @@ const DEFAULT_SETTINGS = {
   warningTokenThreshold: 20000,    // 80% - yellow warning
   warningTimeThreshold: 1440000,   // 24 minutes - 80%
   enableSounds: true,
-  enableNotifications: true
+  enableNotifications: true,
+  tokenCostRate: 0.003             // $ per 1000 tokens (default Claude rate)
 }
+
+// ===== ACTIVITY FEED =====
+const ACTIVITY_FEED_FILE = join(TOWN_ROOT, 'activity_feed.json')
+const MAX_FEED_EVENTS = 100
+let activityFeed = []
+
+function loadActivityFeed() {
+  try {
+    if (existsSync(ACTIVITY_FEED_FILE)) {
+      const content = readFileSync(ACTIVITY_FEED_FILE, 'utf-8')
+      activityFeed = JSON.parse(content)
+    }
+  } catch (e) {
+    console.error('Failed to load activity feed:', e.message)
+    activityFeed = []
+  }
+}
+
+function saveActivityFeed() {
+  try {
+    const dir = dirname(ACTIVITY_FEED_FILE)
+    if (!existsSync(dir)) {
+      mkdirSync(dir, { recursive: true })
+    }
+    writeFileSync(ACTIVITY_FEED_FILE, JSON.stringify(activityFeed, null, 2))
+  } catch (e) {
+    console.error('Failed to save activity feed:', e.message)
+  }
+}
+
+function addActivityEvent(type, data, user = null) {
+  const event = {
+    id: `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+    type,
+    timestamp: new Date().toISOString(),
+    user: user || 'system',
+    ...data
+  }
+
+  activityFeed.unshift(event)
+
+  // Keep only last MAX_FEED_EVENTS
+  if (activityFeed.length > MAX_FEED_EVENTS) {
+    activityFeed = activityFeed.slice(0, MAX_FEED_EVENTS)
+  }
+
+  saveActivityFeed()
+
+  // Broadcast to all connected clients
+  multiplayer.broadcastFeedEvent(event)
+
+  return event
+}
+
+// Load activity feed on startup
+loadActivityFeed()
+
+// ===== TASK QUEUE =====
+const TASK_QUEUE_FILE = join(TOWN_ROOT, 'task_queue.json')
+let taskQueue = []
+
+function loadTaskQueue() {
+  try {
+    if (existsSync(TASK_QUEUE_FILE)) {
+      const content = readFileSync(TASK_QUEUE_FILE, 'utf-8')
+      taskQueue = JSON.parse(content)
+    }
+  } catch (e) {
+    console.error('Failed to load task queue:', e.message)
+    taskQueue = []
+  }
+}
+
+function saveTaskQueue() {
+  try {
+    const dir = dirname(TASK_QUEUE_FILE)
+    if (!existsSync(dir)) {
+      mkdirSync(dir, { recursive: true })
+    }
+    writeFileSync(TASK_QUEUE_FILE, JSON.stringify(taskQueue, null, 2))
+  } catch (e) {
+    console.error('Failed to save task queue:', e.message)
+  }
+}
+
+// Load task queue on startup
+loadTaskQueue()
+
+// ===== COST TRACKING =====
+const COST_FILE = join(TOWN_ROOT, 'cost_history.json')
+let costHistory = { daily: {}, byAgent: {}, byProject: {} }
+
+function loadCostHistory() {
+  try {
+    if (existsSync(COST_FILE)) {
+      const content = readFileSync(COST_FILE, 'utf-8')
+      costHistory = JSON.parse(content)
+    }
+  } catch (e) {
+    console.error('Failed to load cost history:', e.message)
+    costHistory = { daily: {}, byAgent: {}, byProject: {} }
+  }
+}
+
+function saveCostHistory() {
+  try {
+    const dir = dirname(COST_FILE)
+    if (!existsSync(dir)) {
+      mkdirSync(dir, { recursive: true })
+    }
+    writeFileSync(COST_FILE, JSON.stringify(costHistory, null, 2))
+  } catch (e) {
+    console.error('Failed to save cost history:', e.message)
+  }
+}
+
+function recordTokenUsage(agent, project, tokens) {
+  const today = new Date().toISOString().split('T')[0]
+
+  // Daily totals
+  if (!costHistory.daily[today]) {
+    costHistory.daily[today] = 0
+  }
+  costHistory.daily[today] += tokens
+
+  // By agent
+  if (!costHistory.byAgent[agent]) {
+    costHistory.byAgent[agent] = { total: 0, daily: {} }
+  }
+  costHistory.byAgent[agent].total += tokens
+  if (!costHistory.byAgent[agent].daily[today]) {
+    costHistory.byAgent[agent].daily[today] = 0
+  }
+  costHistory.byAgent[agent].daily[today] += tokens
+
+  // By project
+  if (!costHistory.byProject[project]) {
+    costHistory.byProject[project] = { total: 0, daily: {} }
+  }
+  costHistory.byProject[project].total += tokens
+  if (!costHistory.byProject[project].daily[today]) {
+    costHistory.byProject[project].daily[today] = 0
+  }
+  costHistory.byProject[project].daily[today] += tokens
+
+  saveCostHistory()
+}
+
+// Load cost history on startup
+loadCostHistory()
 
 // Load settings from file or use defaults
 function loadSettings() {
@@ -128,6 +279,15 @@ function checkForStuckAgents() {
               message: timeExceeded
                 ? `${name} has been working for over ${Math.round(elapsed / 60000)} minutes`
                 : `${name} has used over ${tokensUsed.toLocaleString()} tokens`
+            })
+
+            // Add to activity feed
+            addActivityEvent('agent_stuck', {
+              agent: name,
+              rig: rig.name,
+              reason: status.stuckReason,
+              elapsed,
+              tokensUsed
             })
           }
           // Check for warning thresholds (80%)
@@ -281,6 +441,12 @@ app.post('/api/rigs', (req, res) => {
     execSync(`mkdir -p "${rigPath}"`, { encoding: 'utf-8', shell: true })
     // Broadcast new rig to all connected users
     multiplayer.broadcastStateUpdate({ event: 'rig:created', rig: name })
+
+    // Add to activity feed
+    addActivityEvent('project_created', {
+      project: name
+    }, req.session?.passport?.user)
+
     res.json({ success: true, name })
   } catch (e) {
     console.error('Failed to create rig:', e.message)
@@ -358,6 +524,13 @@ app.post('/api/rigs/:name/clone', (req, res) => {
   }
 
   multiplayer.broadcastStateUpdate({ event: 'repo:cloned', rig: name, repo })
+
+  // Add to activity feed
+  addActivityEvent('repo_cloned', {
+    project: name,
+    repo
+  }, req.session?.passport?.user)
+
   res.json({ success: true, repo })
 })
 
@@ -382,6 +555,13 @@ app.post('/api/rigs/:name/polecats', (req, res) => {
     }
     writeFileSync(join(polecatPath, 'status.json'), JSON.stringify(initialStatus, null, 2))
     multiplayer.broadcastStateUpdate({ event: 'polecat:spawned', rig: name, polecat: pcName })
+
+    // Add to activity feed
+    addActivityEvent('agent_spawned', {
+      agent: pcName,
+      rig: name
+    }, req.session?.passport?.user)
+
     res.json({ success: true, name: pcName })
   } catch (e) {
     console.error('Failed to spawn polecat:', e.message)
@@ -477,6 +657,13 @@ app.post('/api/sling', (req, res) => {
       polecat: polecatName,
       issue: issue
     })
+
+    // Add to activity feed
+    addActivityEvent('task_assigned', {
+      task: issue,
+      agent: polecatName,
+      rig: rigName
+    }, req.session?.passport?.user)
 
     res.json({ success: true, message: `Assigned ${issue} to ${polecatName}`, status })
   } catch (e) {
@@ -617,6 +804,13 @@ app.post('/api/agents/:id/simulate-stuck', (req, res) => {
       message: `${polecatName} exceeded token limit!`,
       agent: polecatName,
       rig: rigName
+    })
+
+    // Add to activity feed
+    addActivityEvent('agent_stuck', {
+      agent: polecatName,
+      rig: rigName,
+      reason: 'tokens'
     })
 
     res.json({ success: true, message: `${polecatName} is now stuck (simulated)` })
@@ -767,6 +961,14 @@ app.post('/api/agents/:id/reassign', (req, res) => {
     rig: newRig
   })
 
+  // Add to activity feed
+  addActivityEvent('task_reassigned', {
+    task,
+    fromAgent: oldPolecat,
+    toAgent: newPolecat,
+    rig: newRig
+  }, req.session?.passport?.user)
+
   res.json({
     success: true,
     message: `Reassigned "${task}" from ${oldPolecat} to ${newPolecat}`,
@@ -831,13 +1033,52 @@ app.post('/api/agents/:id/complete', (req, res) => {
       rig: rigName
     })
 
+    // Add to activity feed
+    addActivityEvent('task_completed', {
+      task: oldStatus.issue || 'task',
+      agent: polecatName,
+      rig: rigName
+    }, req.session?.passport?.user)
+
     res.json({ success: true, agent: polecatName, completedTask: oldStatus.issue })
   } catch (e) {
     res.status(500).json({ error: 'Failed to mark complete: ' + e.message })
   }
 })
 
-// GET /api/feed - Live activity feed (SSE)
+// ===== ACTIVITY FEED ENDPOINTS =====
+
+// GET /api/activity - Get activity feed
+app.get('/api/activity', (req, res) => {
+  const { limit = 50, offset = 0, type, project, agent } = req.query
+
+  let filtered = [...activityFeed]
+
+  // Apply filters
+  if (type) {
+    const types = type.split(',')
+    filtered = filtered.filter(e => types.includes(e.type))
+  }
+  if (project) {
+    filtered = filtered.filter(e => e.rig === project || e.project === project)
+  }
+  if (agent) {
+    filtered = filtered.filter(e => e.polecat === agent || e.agent === agent)
+  }
+
+  // Apply pagination
+  const start = parseInt(offset)
+  const end = start + parseInt(limit)
+  const paginated = filtered.slice(start, end)
+
+  res.json({
+    events: paginated,
+    total: filtered.length,
+    hasMore: end < filtered.length
+  })
+})
+
+// GET /api/feed - Live activity feed (SSE) - Legacy endpoint
 app.get('/api/feed', (req, res) => {
   res.setHeader('Content-Type', 'text/event-stream')
   res.setHeader('Cache-Control', 'no-cache')
@@ -854,6 +1095,778 @@ app.get('/api/feed', (req, res) => {
   req.on('close', () => {
     clearInterval(interval)
   })
+})
+
+// ===== TASK QUEUE ENDPOINTS =====
+
+// GET /api/taskqueue - Get task queue
+app.get('/api/taskqueue', (req, res) => {
+  const { project } = req.query
+  let filtered = [...taskQueue]
+
+  if (project) {
+    filtered = filtered.filter(t => t.project === project)
+  }
+
+  // Group by project for queue depth
+  const projectDepths = {}
+  taskQueue.forEach(t => {
+    if (!projectDepths[t.project]) projectDepths[t.project] = 0
+    projectDepths[t.project]++
+  })
+
+  res.json({
+    tasks: filtered,
+    total: taskQueue.length,
+    projectDepths
+  })
+})
+
+// POST /api/taskqueue - Add task to queue
+app.post('/api/taskqueue', (req, res) => {
+  const { title, description, project, priority = 0, assignTo, autoAssign = false } = req.body
+
+  if (!title) {
+    return res.status(400).json({ error: 'Task title required' })
+  }
+
+  const task = {
+    id: `task-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+    title,
+    description: description || '',
+    project: project || 'default',
+    priority,
+    status: 'pending',
+    assignTo: assignTo || null,
+    autoAssign,
+    createdAt: new Date().toISOString(),
+    createdBy: req.session?.passport?.user || 'anonymous'
+  }
+
+  taskQueue.push(task)
+  saveTaskQueue()
+
+  // Add to activity feed
+  addActivityEvent('task_queued', {
+    task: task.title,
+    project: task.project,
+    taskId: task.id
+  }, task.createdBy)
+
+  multiplayer.broadcastTaskQueueUpdate(taskQueue)
+  res.json({ success: true, task })
+})
+
+// PUT /api/taskqueue/:id - Update task (reorder, assign, etc.)
+app.put('/api/taskqueue/:id', (req, res) => {
+  const { id } = req.params
+  const { priority, assignTo, status, position } = req.body
+
+  const taskIndex = taskQueue.findIndex(t => t.id === id)
+  if (taskIndex === -1) {
+    return res.status(404).json({ error: 'Task not found' })
+  }
+
+  const task = taskQueue[taskIndex]
+
+  // Update fields
+  if (priority !== undefined) task.priority = priority
+  if (assignTo !== undefined) task.assignTo = assignTo
+  if (status !== undefined) task.status = status
+
+  // Handle reordering
+  if (position !== undefined && position !== taskIndex) {
+    taskQueue.splice(taskIndex, 1)
+    taskQueue.splice(position, 0, task)
+  }
+
+  saveTaskQueue()
+  multiplayer.broadcastTaskQueueUpdate(taskQueue)
+  res.json({ success: true, task })
+})
+
+// DELETE /api/taskqueue/:id - Remove task from queue
+app.delete('/api/taskqueue/:id', (req, res) => {
+  const { id } = req.params
+  const taskIndex = taskQueue.findIndex(t => t.id === id)
+
+  if (taskIndex === -1) {
+    return res.status(404).json({ error: 'Task not found' })
+  }
+
+  const removed = taskQueue.splice(taskIndex, 1)[0]
+  saveTaskQueue()
+  multiplayer.broadcastTaskQueueUpdate(taskQueue)
+  res.json({ success: true, removed })
+})
+
+// POST /api/taskqueue/:id/assign - Assign task from queue to agent
+app.post('/api/taskqueue/:id/assign', (req, res) => {
+  const { id } = req.params
+  const { agent, rig } = req.body
+
+  const taskIndex = taskQueue.findIndex(t => t.id === id)
+  if (taskIndex === -1) {
+    return res.status(404).json({ error: 'Task not found' })
+  }
+
+  const task = taskQueue[taskIndex]
+
+  // Remove from queue
+  taskQueue.splice(taskIndex, 1)
+  saveTaskQueue()
+
+  // Sling to agent
+  const agentPath = `${rig || task.project}/polecats/${agent}`
+  const statusPath = join(TOWN_ROOT, rig || task.project, 'polecats', agent, 'status.json')
+
+  try {
+    const status = {
+      status: 'working',
+      issue: task.title,
+      description: task.description,
+      assignedAt: new Date().toISOString(),
+      progress: 0
+    }
+    const statusDir = dirname(statusPath)
+    if (!existsSync(statusDir)) {
+      mkdirSync(statusDir, { recursive: true })
+    }
+    writeFileSync(statusPath, JSON.stringify(status, null, 2))
+
+    addActivityEvent('task_assigned', {
+      task: task.title,
+      agent: agent,
+      rig: rig || task.project,
+      taskId: task.id
+    })
+
+    multiplayer.broadcastStateUpdate({
+      event: 'polecat:working',
+      rig: rig || task.project,
+      polecat: agent,
+      issue: task.title
+    })
+
+    multiplayer.broadcastTaskQueueUpdate(taskQueue)
+    res.json({ success: true, assigned: { agent, task: task.title } })
+  } catch (e) {
+    // Put task back in queue on failure
+    taskQueue.splice(taskIndex, 0, task)
+    saveTaskQueue()
+    res.status(500).json({ error: 'Failed to assign task: ' + e.message })
+  }
+})
+
+// ===== COST DASHBOARD ENDPOINTS =====
+
+// GET /api/costs/dashboard - Get cost dashboard data
+app.get('/api/costs/dashboard', (req, res) => {
+  const today = new Date()
+  const todayStr = today.toISOString().split('T')[0]
+
+  // Calculate date ranges
+  const weekAgo = new Date(today)
+  weekAgo.setDate(weekAgo.getDate() - 7)
+  const monthAgo = new Date(today)
+  monthAgo.setDate(monthAgo.getDate() - 30)
+
+  // Calculate totals
+  let todayTokens = costHistory.daily[todayStr] || 0
+  let weekTokens = 0
+  let monthTokens = 0
+
+  // Build daily data for sparkline (last 7 days)
+  const sparklineData = []
+  for (let i = 6; i >= 0; i--) {
+    const d = new Date(today)
+    d.setDate(d.getDate() - i)
+    const dateStr = d.toISOString().split('T')[0]
+    const tokens = costHistory.daily[dateStr] || 0
+    sparklineData.push({ date: dateStr, tokens })
+    weekTokens += tokens
+  }
+
+  // Calculate month total
+  for (let i = 29; i >= 0; i--) {
+    const d = new Date(today)
+    d.setDate(d.getDate() - i)
+    const dateStr = d.toISOString().split('T')[0]
+    monthTokens += costHistory.daily[dateStr] || 0
+  }
+
+  // Get token cost rate from settings
+  const rate = currentSettings.tokenCostRate || 0.003
+
+  // Build breakdown by project
+  const byProject = Object.entries(costHistory.byProject || {}).map(([name, data]) => ({
+    name,
+    tokens: data.total,
+    cost: (data.total / 1000) * rate
+  })).sort((a, b) => b.tokens - a.tokens)
+
+  // Build breakdown by agent
+  const byAgent = Object.entries(costHistory.byAgent || {}).map(([name, data]) => ({
+    name,
+    tokens: data.total,
+    cost: (data.total / 1000) * rate
+  })).sort((a, b) => b.tokens - a.tokens)
+
+  res.json({
+    today: {
+      tokens: todayTokens,
+      cost: (todayTokens / 1000) * rate
+    },
+    week: {
+      tokens: weekTokens,
+      cost: (weekTokens / 1000) * rate
+    },
+    month: {
+      tokens: monthTokens,
+      cost: (monthTokens / 1000) * rate
+    },
+    sparkline: sparklineData,
+    byProject,
+    byAgent,
+    rate,
+    budgetAlert: currentSettings.budgetLimit
+      ? monthTokens > currentSettings.budgetLimit * 0.8
+      : false
+  })
+})
+
+// POST /api/costs/record - Record token usage (called by agents or hooks)
+app.post('/api/costs/record', (req, res) => {
+  const { agent, project, tokens } = req.body
+
+  if (!agent || !project || !tokens) {
+    return res.status(400).json({ error: 'Missing agent, project, or tokens' })
+  }
+
+  recordTokenUsage(agent, project, parseInt(tokens))
+  multiplayer.broadcastCostUpdate({ agent, project, tokens })
+
+  res.json({ success: true })
+})
+
+// GET /api/costs/export - Export cost data as CSV
+app.get('/api/costs/export', (req, res) => {
+  const { from, to } = req.query
+  const fromDate = from ? new Date(from) : new Date(Date.now() - 30 * 24 * 60 * 60 * 1000)
+  const toDate = to ? new Date(to) : new Date()
+
+  const rate = currentSettings.tokenCostRate || 0.003
+
+  let csv = 'Date,Tokens,Cost (USD)\n'
+
+  const current = new Date(fromDate)
+  while (current <= toDate) {
+    const dateStr = current.toISOString().split('T')[0]
+    const tokens = costHistory.daily[dateStr] || 0
+    const cost = ((tokens / 1000) * rate).toFixed(4)
+    csv += `${dateStr},${tokens},${cost}\n`
+    current.setDate(current.getDate() + 1)
+  }
+
+  res.setHeader('Content-Type', 'text/csv')
+  res.setHeader('Content-Disposition', `attachment; filename=costs-${fromDate.toISOString().split('T')[0]}-${toDate.toISOString().split('T')[0]}.csv`)
+  res.send(csv)
+})
+
+// ===== GITHUB INTEGRATION ENDPOINTS =====
+
+// GitHub PR tracking storage
+const GITHUB_PRS_FILE = join(TOWN_ROOT, 'github_prs.json')
+let githubPRs = []
+
+function loadGitHubPRs() {
+  try {
+    if (existsSync(GITHUB_PRS_FILE)) {
+      const content = readFileSync(GITHUB_PRS_FILE, 'utf-8')
+      githubPRs = JSON.parse(content)
+    }
+  } catch (e) {
+    console.error('Failed to load GitHub PRs:', e.message)
+    githubPRs = []
+  }
+}
+
+function saveGitHubPRs() {
+  try {
+    const dir = dirname(GITHUB_PRS_FILE)
+    if (!existsSync(dir)) {
+      mkdirSync(dir, { recursive: true })
+    }
+    writeFileSync(GITHUB_PRS_FILE, JSON.stringify(githubPRs, null, 2))
+  } catch (e) {
+    console.error('Failed to save GitHub PRs:', e.message)
+  }
+}
+
+// Load GitHub PRs on startup
+loadGitHubPRs()
+
+// GET /api/github/prs - Get tracked PRs
+app.get('/api/github/prs', (req, res) => {
+  const { project, agent, status } = req.query
+  let filtered = [...githubPRs]
+
+  if (project) {
+    filtered = filtered.filter(pr => pr.project === project)
+  }
+  if (agent) {
+    filtered = filtered.filter(pr => pr.agent === agent)
+  }
+  if (status) {
+    filtered = filtered.filter(pr => pr.status === status)
+  }
+
+  res.json({
+    prs: filtered.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt)),
+    total: filtered.length
+  })
+})
+
+// POST /api/github/prs - Track a new PR (can be called by agents via hooks)
+app.post('/api/github/prs', (req, res) => {
+  const { url, title, agent, project, status = 'open', isDraft = false, commits = 0, changedFiles = 0 } = req.body
+
+  if (!url || !title) {
+    return res.status(400).json({ error: 'URL and title required' })
+  }
+
+  // Extract PR number from URL
+  const prMatch = url.match(/\/pull\/(\d+)/)
+  const prNumber = prMatch ? prMatch[1] : null
+
+  const pr = {
+    id: `pr-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+    url,
+    number: prNumber,
+    title,
+    agent: agent || null,
+    project: project || 'unknown',
+    status,
+    isDraft,
+    commits,
+    changedFiles,
+    ciStatus: 'pending',
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString()
+  }
+
+  githubPRs.unshift(pr)
+  saveGitHubPRs()
+
+  // Add to activity feed
+  addActivityEvent('pr_created', {
+    pr: title,
+    url,
+    agent,
+    project
+  }, agent)
+
+  multiplayer.broadcastStateUpdate({ event: 'github:pr_created', pr })
+
+  res.json({ success: true, pr })
+})
+
+// PUT /api/github/prs/:id - Update PR status
+app.put('/api/github/prs/:id', (req, res) => {
+  const { id } = req.params
+  const { status, ciStatus, commits, changedFiles, isDraft } = req.body
+
+  const prIndex = githubPRs.findIndex(pr => pr.id === id)
+  if (prIndex === -1) {
+    return res.status(404).json({ error: 'PR not found' })
+  }
+
+  const pr = githubPRs[prIndex]
+
+  if (status !== undefined) pr.status = status
+  if (ciStatus !== undefined) pr.ciStatus = ciStatus
+  if (commits !== undefined) pr.commits = commits
+  if (changedFiles !== undefined) pr.changedFiles = changedFiles
+  if (isDraft !== undefined) pr.isDraft = isDraft
+  pr.updatedAt = new Date().toISOString()
+
+  saveGitHubPRs()
+
+  // Add activity event for status changes
+  if (status === 'merged') {
+    addActivityEvent('pr_merged', {
+      pr: pr.title,
+      url: pr.url,
+      agent: pr.agent,
+      project: pr.project
+    })
+  }
+
+  multiplayer.broadcastStateUpdate({ event: 'github:pr_updated', pr })
+
+  res.json({ success: true, pr })
+})
+
+// DELETE /api/github/prs/:id - Remove PR tracking
+app.delete('/api/github/prs/:id', (req, res) => {
+  const { id } = req.params
+  const prIndex = githubPRs.findIndex(pr => pr.id === id)
+
+  if (prIndex === -1) {
+    return res.status(404).json({ error: 'PR not found' })
+  }
+
+  const removed = githubPRs.splice(prIndex, 1)[0]
+  saveGitHubPRs()
+
+  res.json({ success: true, removed })
+})
+
+// POST /api/github/webhook - Webhook receiver for GitHub events
+app.post('/api/github/webhook', (req, res) => {
+  const event = req.headers['x-github-event']
+  const payload = req.body
+
+  if (event === 'pull_request') {
+    const prUrl = payload.pull_request?.html_url
+    const prStatus = payload.action
+
+    // Find and update tracked PR
+    const pr = githubPRs.find(p => p.url === prUrl)
+    if (pr) {
+      if (prStatus === 'closed' && payload.pull_request?.merged) {
+        pr.status = 'merged'
+      } else if (prStatus === 'closed') {
+        pr.status = 'closed'
+      } else if (prStatus === 'opened' || prStatus === 'reopened') {
+        pr.status = 'open'
+      }
+      pr.isDraft = payload.pull_request?.draft || false
+      pr.updatedAt = new Date().toISOString()
+      saveGitHubPRs()
+
+      multiplayer.broadcastStateUpdate({ event: 'github:pr_updated', pr })
+    }
+  }
+
+  res.json({ received: true })
+})
+
+// ===== BATCH OPERATIONS ENDPOINTS =====
+
+// POST /api/batch/stop - Stop multiple agents
+app.post('/api/batch/stop', (req, res) => {
+  const { agents } = req.body
+
+  if (!agents || !Array.isArray(agents) || agents.length === 0) {
+    return res.status(400).json({ error: 'Agents array required' })
+  }
+
+  const results = []
+  for (const agentId of agents) {
+    try {
+      // Parse agent ID
+      const parts = agentId.split('/')
+      let rigName, polecatName
+      if (parts.length >= 3) {
+        rigName = parts[0]
+        polecatName = parts[parts.length - 1]
+      } else {
+        polecatName = agentId
+        // Find the rig
+        const rigs = listRigs()
+        for (const r of rigs) {
+          const statusPath = join(TOWN_ROOT, r.name, 'polecats', polecatName, 'status.json')
+          if (existsSync(statusPath)) {
+            rigName = r.name
+            break
+          }
+        }
+      }
+
+      if (rigName) {
+        const statusPath = join(TOWN_ROOT, rigName, 'polecats', polecatName, 'status.json')
+        if (existsSync(statusPath)) {
+          const content = readFileSync(statusPath, 'utf-8')
+          const status = JSON.parse(content)
+          status.status = 'idle'
+          status.stoppedAt = new Date().toISOString()
+          writeFileSync(statusPath, JSON.stringify(status, null, 2))
+          results.push({ agent: agentId, success: true })
+        }
+      }
+    } catch (e) {
+      results.push({ agent: agentId, success: false, error: e.message })
+    }
+  }
+
+  addActivityEvent('batch_stop', {
+    count: results.filter(r => r.success).length,
+    agents: agents
+  }, req.session?.passport?.user)
+
+  multiplayer.broadcastStateUpdate({ event: 'batch:stop', results })
+  res.json({ success: true, results })
+})
+
+// POST /api/batch/complete - Mark multiple agents as complete
+app.post('/api/batch/complete', (req, res) => {
+  const { agents } = req.body
+
+  if (!agents || !Array.isArray(agents) || agents.length === 0) {
+    return res.status(400).json({ error: 'Agents array required' })
+  }
+
+  const results = []
+  for (const agentId of agents) {
+    try {
+      const parts = agentId.split('/')
+      let rigName, polecatName
+      if (parts.length >= 3) {
+        rigName = parts[0]
+        polecatName = parts[parts.length - 1]
+      } else {
+        polecatName = agentId
+        const rigs = listRigs()
+        for (const r of rigs) {
+          const statusPath = join(TOWN_ROOT, r.name, 'polecats', polecatName, 'status.json')
+          if (existsSync(statusPath)) {
+            rigName = r.name
+            break
+          }
+        }
+      }
+
+      if (rigName) {
+        const statusPath = join(TOWN_ROOT, rigName, 'polecats', polecatName, 'status.json')
+        if (existsSync(statusPath)) {
+          const content = readFileSync(statusPath, 'utf-8')
+          const oldStatus = JSON.parse(content)
+          const newStatus = {
+            status: 'idle',
+            completedTask: oldStatus.issue || oldStatus.task,
+            completedAt: new Date().toISOString(),
+            created: oldStatus.created
+          }
+          writeFileSync(statusPath, JSON.stringify(newStatus, null, 2))
+          results.push({ agent: agentId, success: true })
+        }
+      }
+    } catch (e) {
+      results.push({ agent: agentId, success: false, error: e.message })
+    }
+  }
+
+  addActivityEvent('batch_complete', {
+    count: results.filter(r => r.success).length,
+    agents: agents
+  }, req.session?.passport?.user)
+
+  multiplayer.broadcastStateUpdate({ event: 'batch:complete', results })
+  res.json({ success: true, results })
+})
+
+// POST /api/batch/spawn - Spawn multiple agents at once
+app.post('/api/batch/spawn', (req, res) => {
+  const { rig, count = 1, prefix = 'polecat' } = req.body
+
+  if (!rig) {
+    return res.status(400).json({ error: 'Rig name required' })
+  }
+
+  const results = []
+  const rigPath = join(TOWN_ROOT, rig)
+
+  for (let i = 0; i < Math.min(count, 10); i++) {  // Max 10 at once
+    try {
+      const pcName = `${prefix}-${Date.now()}-${i}`
+      const polecatPath = join(rigPath, 'polecats', pcName)
+
+      if (!existsSync(polecatPath)) {
+        mkdirSync(polecatPath, { recursive: true })
+      }
+
+      const initialStatus = {
+        status: 'idle',
+        created: new Date().toISOString()
+      }
+      writeFileSync(join(polecatPath, 'status.json'), JSON.stringify(initialStatus, null, 2))
+      results.push({ name: pcName, success: true })
+
+      multiplayer.broadcastStateUpdate({ event: 'polecat:spawned', rig, polecat: pcName })
+    } catch (e) {
+      results.push({ name: `${prefix}-${i}`, success: false, error: e.message })
+    }
+  }
+
+  addActivityEvent('batch_spawn', {
+    count: results.filter(r => r.success).length,
+    rig,
+    agents: results.filter(r => r.success).map(r => r.name)
+  }, req.session?.passport?.user)
+
+  res.json({ success: true, results })
+})
+
+// ===== PROJECT TEMPLATES ENDPOINTS =====
+
+const TEMPLATES_FILE = join(TOWN_ROOT, 'templates.json')
+let projectTemplates = []
+
+function loadTemplates() {
+  try {
+    if (existsSync(TEMPLATES_FILE)) {
+      const content = readFileSync(TEMPLATES_FILE, 'utf-8')
+      projectTemplates = JSON.parse(content)
+    }
+  } catch (e) {
+    console.error('Failed to load templates:', e.message)
+    projectTemplates = []
+  }
+}
+
+function saveTemplates() {
+  try {
+    const dir = dirname(TEMPLATES_FILE)
+    if (!existsSync(dir)) {
+      mkdirSync(dir, { recursive: true })
+    }
+    writeFileSync(TEMPLATES_FILE, JSON.stringify(projectTemplates, null, 2))
+  } catch (e) {
+    console.error('Failed to save templates:', e.message)
+  }
+}
+
+// Load templates on startup
+loadTemplates()
+
+// GET /api/templates - Get all templates
+app.get('/api/templates', (req, res) => {
+  res.json({ templates: projectTemplates })
+})
+
+// POST /api/templates - Create template from existing rig
+app.post('/api/templates', (req, res) => {
+  const { name, description, sourceRig, defaultAgentCount = 1, taskTypes = [] } = req.body
+
+  if (!name) {
+    return res.status(400).json({ error: 'Template name required' })
+  }
+
+  // Get repo info from source rig if provided
+  let repo = null
+  if (sourceRig) {
+    const rigPath = join(TOWN_ROOT, sourceRig)
+    try {
+      // Try to find a git repo in the rig
+      const dirs = execSync(`ls -1 "${rigPath}" 2>/dev/null || true`, { encoding: 'utf-8' }).trim()
+      for (const dir of dirs.split('\n').filter(Boolean)) {
+        const gitPath = join(rigPath, dir, '.git')
+        if (existsSync(gitPath)) {
+          try {
+            repo = execSync(`cd "${join(rigPath, dir)}" && git remote get-url origin 2>/dev/null`, {
+              encoding: 'utf-8'
+            }).trim()
+          } catch (e) { /* no remote */ }
+          break
+        }
+      }
+    } catch (e) { /* ignore */ }
+  }
+
+  const template = {
+    id: `tpl-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+    name,
+    description: description || '',
+    repo,
+    defaultAgentCount,
+    taskTypes,
+    createdAt: new Date().toISOString(),
+    createdBy: req.session?.passport?.user || 'anonymous'
+  }
+
+  projectTemplates.push(template)
+  saveTemplates()
+
+  res.json({ success: true, template })
+})
+
+// POST /api/templates/:id/create - Create project from template
+app.post('/api/templates/:id/create', async (req, res) => {
+  const { id } = req.params
+  const { projectName } = req.body
+
+  const template = projectTemplates.find(t => t.id === id)
+  if (!template) {
+    return res.status(404).json({ error: 'Template not found' })
+  }
+
+  if (!projectName) {
+    return res.status(400).json({ error: 'Project name required' })
+  }
+
+  try {
+    // Create the rig
+    const rigPath = join(TOWN_ROOT, projectName)
+    mkdirSync(rigPath, { recursive: true })
+
+    // Clone repo if template has one
+    if (template.repo) {
+      try {
+        execSync(`git clone "${template.repo}"`, {
+          cwd: rigPath,
+          encoding: 'utf-8',
+          timeout: 120000
+        })
+      } catch (e) {
+        console.error('Clone failed:', e.message)
+      }
+    }
+
+    // Spawn polecats
+    const polecats = []
+    for (let i = 0; i < template.defaultAgentCount; i++) {
+      const pcName = `polecat-${i + 1}`
+      const polecatPath = join(rigPath, 'polecats', pcName)
+      mkdirSync(polecatPath, { recursive: true })
+      writeFileSync(join(polecatPath, 'status.json'), JSON.stringify({
+        status: 'idle',
+        created: new Date().toISOString()
+      }, null, 2))
+      polecats.push(pcName)
+    }
+
+    addActivityEvent('project_from_template', {
+      project: projectName,
+      template: template.name
+    }, req.session?.passport?.user)
+
+    multiplayer.broadcastStateUpdate({ event: 'rig:created', rig: projectName })
+
+    res.json({
+      success: true,
+      project: projectName,
+      template: template.name,
+      polecats
+    })
+  } catch (e) {
+    res.status(500).json({ error: 'Failed to create project: ' + e.message })
+  }
+})
+
+// DELETE /api/templates/:id - Delete a template
+app.delete('/api/templates/:id', (req, res) => {
+  const { id } = req.params
+  const index = projectTemplates.findIndex(t => t.id === id)
+
+  if (index === -1) {
+    return res.status(404).json({ error: 'Template not found' })
+  }
+
+  const removed = projectTemplates.splice(index, 1)[0]
+  saveTemplates()
+
+  res.json({ success: true, removed })
 })
 
 // Helper: Get polecats for a specific rig

@@ -19,6 +19,9 @@ const config = {
 
 const game = new Phaser.Game(config)
 
+// Expose for debugging
+window.game = game
+
 window.addEventListener('resize', () => {
   game.scale.resize(window.innerWidth, window.innerHeight)
 })

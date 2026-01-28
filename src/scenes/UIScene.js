@@ -12,6 +12,11 @@ export class UIScene extends Phaser.Scene {
   }
 
   create() {
+    // Initialize user presence tracking
+    this.userWatchers = new Map() // agentId -> Set of userIds watching
+    this.userStatuses = new Map() // userId -> status
+    this.connectedUsers = []
+
     // Create UI containers (Club Penguin style!)
     this.createResourceBar()
     this.createMinimap()
@@ -34,6 +39,7 @@ export class UIScene extends Phaser.Scene {
       this.gameScene.events.on('usersUpdated', this.updateConnectedUsers, this)
       this.gameScene.events.on('buildingClicked', this.onBuildingClicked, this)
       this.gameScene.events.on('mayorClicked', this.openMayorChat, this)
+      this.gameScene.events.on('enduranceClicked', this.showEnduranceStory, this)
     }
 
     // Create Mayor chat panel (hidden initially)
@@ -41,6 +47,13 @@ export class UIScene extends Phaser.Scene {
 
     // Create village navigator
     this.createVillageNavigator()
+
+    // Create team productivity panels
+    this.createActivityFeed()
+    this.createTaskQueuePanel()
+    this.createCostDashboardPanel()
+    this.createAgentOutputViewer()
+    this.createGitHubPanel()
 
     // Listen for new villages
     if (this.gameScene) {
@@ -845,10 +858,85 @@ export class UIScene extends Phaser.Scene {
             { agent: data.data.polecat, rig: data.data.rig })
         }
       })
+
+      // Listen for activity feed events
+      multiplayer.socket.on('feed:event', (event) => {
+        this.addFeedEvent(event)
+      })
+
+      // Listen for task queue updates
+      multiplayer.socket.on('taskqueue:update', (queue) => {
+        if (this.queuePanel?.visible) {
+          this.renderTaskQueue(queue)
+        }
+        this.queueToggleText?.setText(`📥 QUEUE (${queue.length})`)
+      })
+
+      // Listen for cost updates
+      multiplayer.socket.on('costs:update', (data) => {
+        if (this.costPanel?.visible) {
+          this.loadCostDashboard()
+        }
+      })
+
+      // Listen for GitHub PR updates
+      multiplayer.socket.on('state:update', (data) => {
+        if (data.data?.event?.startsWith('github:')) {
+          if (this.githubPanelContent?.visible) {
+            this.loadGitHubPRs()
+          }
+        }
+      })
+
+      // Listen for user watching agent changes
+      multiplayer.socket.on('user:watching', (data) => {
+        this.updateUserWatching(data.userId, data.agentId)
+      })
+
+      // Listen for user status changes
+      multiplayer.socket.on('user:status', (data) => {
+        this.updateUserStatus(data.userId, data.status)
+      })
+    }
+
+    // Initialize watchers map
+    this.userWatchers = new Map() // agentId -> Set of userIds watching
+    this.userStatuses = new Map() // userId -> status
+  }
+
+  updateUserWatching(userId, agentId) {
+    // Remove from previous watched agent
+    for (const [agent, watchers] of this.userWatchers) {
+      watchers.delete(userId)
+      if (watchers.size === 0) {
+        this.userWatchers.delete(agent)
+      }
+    }
+
+    // Add to new watched agent
+    if (agentId) {
+      if (!this.userWatchers.has(agentId)) {
+        this.userWatchers.set(agentId, new Set())
+      }
+      this.userWatchers.get(agentId).add(userId)
+    }
+
+    // Update selection card if showing watched agent
+    if (this.selectedUnit && this.selectionCard?.visible) {
+      this.updateWatchingIndicator()
+    }
+  }
+
+  updateUserStatus(userId, status) {
+    this.userStatuses.set(userId, status)
+    // Refresh user dots to show new status
+    if (this.connectedUsers) {
+      this.updateConnectedUsers(this.connectedUsers)
     }
   }
 
   updateConnectedUsers(users) {
+    this.connectedUsers = users // Store for status updates
     // Clear existing dots
     this.userDots.removeAll(true)
 
@@ -870,17 +958,40 @@ export class UIScene extends Phaser.Scene {
     })
     this.userDots.add(selfDot)
 
-    // Add dots for other users
+    // Add dots for other users with status indicators
     users.forEach((user, i) => {
       const colorHex = parseInt(user.color.hex.replace('#', ''), 16)
+      const xPos = 20 + i * 24 // Slightly more spacing for status ring
       const dot = this.add.graphics()
+
+      // Draw status ring first (behind the dot)
+      const status = this.userStatuses.get(user.id) || user.status || 'active'
+      let statusRingColor
+      switch (status) {
+        case 'away':
+          statusRingColor = 0xF39C12 // Orange for away
+          break
+        case 'busy':
+          statusRingColor = 0xE74C3C // Red for busy
+          break
+        default:
+          statusRingColor = 0x2ECC71 // Green for active
+      }
+
+      // Outer status ring
+      dot.lineStyle(3, statusRingColor, 1)
+      dot.strokeCircle(xPos, 0, 10)
+
+      // User color dot
       dot.fillStyle(colorHex, 1)
-      dot.fillCircle(20 + i * 20, 0, 7)
-      dot.lineStyle(2, 0xFFFFFF, 0.8)
-      dot.strokeCircle(20 + i * 20, 0, 7)
+      dot.fillCircle(xPos, 0, 7)
+
+      // Inner highlight
+      dot.fillStyle(0xFFFFFF, 0.3)
+      dot.fillCircle(xPos - 2, -2, 3)
 
       // Tooltip on hover
-      const hitArea = this.add.zone(20 + i * 20, 0, 18, 18)
+      const hitArea = this.add.zone(xPos, 0, 22, 22)
       hitArea.setInteractive()
       hitArea.on('pointerover', () => {
         this.showUserTooltip(user, hitArea.x, hitArea.y)
@@ -901,15 +1012,28 @@ export class UIScene extends Phaser.Scene {
     if (!this.userTooltip) {
       this.userTooltip = this.add.container(0, 0)
       const bg = this.add.graphics()
-      this.drawGlossyPanel(bg, 0, 0, 110, 34, 0xFFFFFF, 8)
-      this.userTooltipText = this.add.text(55, 17, '', {
+      this.userTooltipBg = bg
+      this.drawGlossyPanel(bg, 0, 0, 130, 50, 0xFFFFFF, 8)
+      this.userTooltipText = this.add.text(65, 14, '', {
         font: 'bold 12px Fredoka',
         fill: '#0077B6'
       }).setOrigin(0.5)
-      this.userTooltip.add([bg, this.userTooltipText])
+      this.userTooltipStatus = this.add.text(65, 32, '', {
+        font: '10px Fredoka',
+        fill: '#666666'
+      }).setOrigin(0.5)
+      this.userTooltip.add([bg, this.userTooltipText, this.userTooltipStatus])
     }
 
     this.userTooltipText.setText(user.name)
+
+    // Show status and watching info
+    const status = this.userStatuses.get(user.id) || user.status || 'active'
+    let statusText = status.charAt(0).toUpperCase() + status.slice(1)
+    if (user.watching) {
+      statusText += ` • Watching ${user.watching}`
+    }
+    this.userTooltipStatus.setText(statusText)
     this.userTooltip.setPosition(x - 55, y + 25)
     this.userTooltip.setVisible(true)
   }
@@ -1186,7 +1310,51 @@ export class UIScene extends Phaser.Scene {
     // Create contextual action buttons
     this.createCardButtons(status)
 
+    // Update watching indicator
+    this.updateWatchingIndicator()
+
+    // Emit watching event to server
+    if (this.multiplayer?.socket) {
+      this.multiplayer.socket.emit('watching', { agentId: unit.id })
+    }
+
     this.statusText.setText(`Selected: ${unit.unitName}`)
+  }
+
+  updateWatchingIndicator() {
+    // Remove previous watching indicator
+    if (this.watchingIndicator) {
+      this.watchingIndicator.destroy()
+      this.watchingIndicator = null
+    }
+
+    if (!this.selectedUnit || !this.selectionCard?.visible) return
+
+    const agentId = this.selectedUnit.id
+    const watchers = this.userWatchers.get(agentId)
+
+    if (watchers && watchers.size > 0) {
+      // Create watching indicator at bottom of card
+      this.watchingIndicator = this.add.container(110, 280)
+
+      // Background pill
+      const bg = this.add.graphics()
+      const watcherCount = watchers.size
+      const text = `👁 ${watcherCount} watching`
+      const pillWidth = 90
+
+      bg.fillStyle(0x9B59B6, 0.9)
+      bg.fillRoundedRect(-pillWidth/2, -10, pillWidth, 20, 10)
+
+      // Text
+      const watchText = this.add.text(0, 0, text, {
+        font: 'bold 10px Fredoka',
+        fill: '#FFFFFF'
+      }).setOrigin(0.5)
+
+      this.watchingIndicator.add([bg, watchText])
+      this.selectionCard.add(this.watchingIndicator)
+    }
   }
 
   showCardProgress(unit) {
@@ -1262,13 +1430,13 @@ export class UIScene extends Phaser.Scene {
       ]
     } else if (status === 'working') {
       buttons = [
-        { label: 'VIEW PROGRESS', action: 'hook', color: 0x3498DB, icon: '?' },
+        { label: 'VIEW OUTPUT', action: 'output', color: 0x3498DB, icon: '📄' },
         { label: 'TEST STUCK', action: 'teststuck', color: 0xE67E22, icon: '🦭' },
         { label: 'STOP WORK', action: 'stop', color: 0xE74C3C, icon: '!' }
       ]
     } else if (status === 'stuck') {
       buttons = [
-        { label: 'VIEW PROBLEM', action: 'hook', color: 0xE74C3C, icon: '!' },
+        { label: 'VIEW OUTPUT', action: 'output', color: 0xE74C3C, icon: '📄' },
         { label: 'REASSIGN WORK', action: 'reassign', color: 0xF39C12, icon: '↻' },
         { label: 'MARK COMPLETE', action: 'complete', color: 0x2ECC71, icon: '✓' },
         { label: 'STOP', action: 'stop', color: 0x95A5A6, icon: 'X' }
@@ -1367,6 +1535,17 @@ export class UIScene extends Phaser.Scene {
         this.selectionCard.setScale(1)
       }
     })
+
+    // Clear watching indicator
+    if (this.watchingIndicator) {
+      this.watchingIndicator.destroy()
+      this.watchingIndicator = null
+    }
+
+    // Emit watching null to server
+    if (this.multiplayer?.socket) {
+      this.multiplayer.socket.emit('watching', { agentId: null })
+    }
 
     this.selectedUnit = null
     // Clear selection in game scene
@@ -1642,11 +1821,14 @@ export class UIScene extends Phaser.Scene {
   updateSelection(units) {
     if (units.length === 0) {
       this.hideSelectionCard()
+      this.hideBatchPanel()
     } else if (units.length === 1) {
+      this.hideBatchPanel()
       this.showSelectionCard(units[0])
     } else {
-      // Multiple selection - show first one for now
-      this.showSelectionCard(units[0])
+      // Multiple selection - show batch panel
+      this.hideSelectionCard()
+      this.showBatchPanel(units)
       this.statusText.setText(`${units.length} penguins selected`)
     }
   }
@@ -1700,6 +1882,9 @@ export class UIScene extends Phaser.Scene {
         break
       case 'teststuck':
         this.doTestStuck(agentId)
+        break
+      case 'output':
+        this.showAgentOutput(agentId, unit.rig)
         break
     }
   }
@@ -3260,7 +3445,86 @@ export class UIScene extends Phaser.Scene {
     })
   }
 
+  showProjectStartOptions() {
+    return new Promise((resolve) => {
+      const width = this.cameras.main.width
+      const height = this.cameras.main.height
+      const modalWidth = 340
+      const modalHeight = 200
+
+      const picker = this.add.container(width/2, height/2)
+      picker.setDepth(1000)
+
+      const backdrop = this.add.graphics()
+      backdrop.fillStyle(0x000000, 0.6)
+      backdrop.fillRect(-width/2, -height/2, width, height)
+      backdrop.setInteractive(new Phaser.Geom.Rectangle(-width/2, -height/2, width, height), Phaser.Geom.Rectangle.Contains)
+      backdrop.on('pointerup', () => {
+        picker.destroy()
+        resolve(null)
+      })
+
+      const panel = this.add.graphics()
+      this.drawGlossyPanel(panel, -modalWidth/2, -modalHeight/2, modalWidth, modalHeight, 0x9B59B6, 18)
+      panel.fillStyle(0xFFFFFF, 0.98)
+      panel.fillRoundedRect(-modalWidth/2 + 10, -modalHeight/2 + 55, modalWidth - 20, modalHeight - 70, 10)
+
+      const title = this.add.text(0, -modalHeight/2 + 28, 'NEW PROJECT', {
+        font: 'bold 18px Fredoka',
+        fill: '#FFFFFF'
+      }).setOrigin(0.5)
+
+      picker.add([backdrop, panel, title])
+
+      // Fresh start button
+      const freshBtn = this.add.graphics()
+      this.drawButton(freshBtn, -modalWidth/2 + 20, -30, modalWidth - 40, 45, 0x2ECC71, true)
+      const freshText = this.add.text(0, -7, 'START FRESH', {
+        font: 'bold 14px Fredoka',
+        fill: '#FFFFFF'
+      }).setOrigin(0.5)
+      const freshZone = this.add.zone(0, -7, modalWidth - 40, 45).setInteractive({ useHandCursor: true })
+      freshZone.on('pointerup', () => {
+        picker.destroy()
+        resolve('fresh')
+      })
+      picker.add([freshBtn, freshText, freshZone])
+
+      // Template button
+      const templateBtn = this.add.graphics()
+      this.drawButton(templateBtn, -modalWidth/2 + 20, 25, modalWidth - 40, 45, 0x3498DB, true)
+      const templateText = this.add.text(0, 48, 'USE TEMPLATE', {
+        font: 'bold 14px Fredoka',
+        fill: '#FFFFFF'
+      }).setOrigin(0.5)
+      const templateZone = this.add.zone(0, 48, modalWidth - 40, 45).setInteractive({ useHandCursor: true })
+      templateZone.on('pointerup', () => {
+        picker.destroy()
+        resolve('template')
+      })
+      picker.add([templateBtn, templateText, templateZone])
+
+      picker.setScale(0.8)
+      picker.setAlpha(0)
+      this.tweens.add({
+        targets: picker,
+        scale: 1,
+        alpha: 1,
+        duration: 200,
+        ease: 'Back.easeOut'
+      })
+    })
+  }
+
   async showNewProjectDialog() {
+    // First, show option to use template or start fresh
+    const useTemplate = await this.showProjectStartOptions()
+    if (useTemplate === 'template') {
+      this.showTemplatesPanel()
+      return
+    }
+    if (useTemplate === null) return
+
     const rigName = await this.showModal({
       title: 'NEW PROJECT',
       message: 'Step 1/3: Enter a name for your project rig',
@@ -3335,6 +3599,1867 @@ export class UIScene extends Phaser.Scene {
         showCancel: false
       })
     }
+  }
+
+  // ===== ACTIVITY FEED / TIMELINE =====
+
+  createActivityFeed() {
+    const width = 280
+    const height = this.cameras.main.height - 160
+    const x = 10
+    const y = 70
+
+    this.activityFeed = this.add.container(x, y)
+    this.activityFeed.setDepth(100)
+
+    // Toggle button
+    this.feedToggleBtn = this.add.container(0, 0)
+    const toggleBg = this.add.graphics()
+    toggleBg.fillStyle(0x0077B6, 0.9)
+    toggleBg.fillRoundedRect(0, 0, 40, 40, 10)
+    toggleBg.fillStyle(0xFFFFFF, 0.15)
+    toggleBg.fillRoundedRect(2, 2, 36, 18, { tl: 8, tr: 8, bl: 0, br: 0 })
+    const toggleIcon = this.add.text(20, 20, '📋', { font: '18px Fredoka' }).setOrigin(0.5)
+    const toggleZone = this.add.zone(20, 20, 40, 40).setInteractive({ useHandCursor: true })
+    toggleZone.on('pointerup', () => this.toggleActivityFeed())
+    this.feedToggleBtn.add([toggleBg, toggleIcon, toggleZone])
+    this.activityFeed.add(this.feedToggleBtn)
+
+    // Feed panel (hidden initially)
+    this.feedPanel = this.add.container(0, 0)
+    this.feedPanel.setVisible(false)
+    this.activityFeed.add(this.feedPanel)
+
+    // Panel background
+    const bg = this.add.graphics()
+    this.drawGlossyPanel(bg, 0, 0, width, height, 0x0077B6, 16)
+    bg.fillStyle(0xFFFFFF, 0.98)
+    bg.fillRoundedRect(8, 50, width - 16, height - 60, 12)
+    this.feedPanel.add(bg)
+
+    // Title
+    const title = this.add.text(width/2, 26, 'ACTIVITY FEED', {
+      font: 'bold 16px Fredoka',
+      fill: '#FFFFFF',
+      stroke: '#005588',
+      strokeThickness: 2
+    }).setOrigin(0.5)
+    this.feedPanel.add(title)
+
+    // Filter buttons
+    this.feedFilters = this.add.container(15, 55)
+    const filters = [
+      { label: 'All', type: null },
+      { label: 'Tasks', type: 'task_assigned,task_completed,task_queued,task_reassigned' },
+      { label: 'Agents', type: 'agent_spawned,agent_stuck' },
+      { label: 'Projects', type: 'project_created,repo_cloned' }
+    ]
+    this.currentFeedFilter = null
+
+    filters.forEach((f, i) => {
+      const btnX = i * 62
+      const btn = this.add.graphics()
+      const isActive = this.currentFeedFilter === f.type
+      btn.fillStyle(isActive ? 0x0077B6 : 0xE8F4FC, 1)
+      btn.fillRoundedRect(btnX, 0, 58, 24, 6)
+      const text = this.add.text(btnX + 29, 12, f.label, {
+        font: 'bold 10px Fredoka',
+        fill: isActive ? '#FFFFFF' : '#0077B6'
+      }).setOrigin(0.5)
+      const zone = this.add.zone(btnX + 29, 12, 58, 24).setInteractive({ useHandCursor: true })
+      zone.on('pointerup', () => {
+        this.currentFeedFilter = f.type
+        this.loadActivityFeed()
+        this.updateFeedFilters()
+      })
+      this.feedFilters.add([btn, text, zone])
+      f.btn = btn
+      f.text = text
+    })
+    this.feedFilterDefs = filters
+    this.feedPanel.add(this.feedFilters)
+
+    // Events list
+    this.feedEventsContainer = this.add.container(15, 85)
+    this.feedPanel.add(this.feedEventsContainer)
+    this.feedEvents = []
+
+    // Scrolling mask
+    const maskShape = this.add.graphics()
+    maskShape.fillStyle(0xFFFFFF)
+    maskShape.fillRect(x + 8, y + 85, width - 16, height - 100)
+    const mask = maskShape.createGeometryMask()
+    maskShape.setVisible(false) // Hide the mask shape itself
+    this.feedEventsContainer.setMask(mask)
+    this.feedScrollY = 0
+
+    // Close button
+    const closeBtn = this.add.graphics()
+    closeBtn.fillStyle(0xFF6B6B, 0.9)
+    closeBtn.fillCircle(width - 18, 18, 12)
+    const closeX = this.add.text(width - 18, 18, '×', {
+      font: 'bold 16px Fredoka',
+      fill: '#FFFFFF'
+    }).setOrigin(0.5)
+    const closeZone = this.add.zone(width - 18, 18, 24, 24).setInteractive({ useHandCursor: true })
+    closeZone.on('pointerup', () => this.toggleActivityFeed())
+    this.feedPanel.add([closeBtn, closeX, closeZone])
+
+    // Load initial data
+    this.loadActivityFeed()
+  }
+
+  toggleActivityFeed() {
+    const isVisible = this.feedPanel.visible
+    if (isVisible) {
+      this.tweens.add({
+        targets: this.feedPanel,
+        x: -300,
+        alpha: 0,
+        duration: 200,
+        ease: 'Back.easeIn',
+        onComplete: () => this.feedPanel.setVisible(false)
+      })
+    } else {
+      this.feedPanel.setVisible(true)
+      this.feedPanel.setX(-300)
+      this.feedPanel.setAlpha(0)
+      this.tweens.add({
+        targets: this.feedPanel,
+        x: 0,
+        alpha: 1,
+        duration: 300,
+        ease: 'Back.easeOut'
+      })
+      this.loadActivityFeed()
+    }
+  }
+
+  updateFeedFilters() {
+    this.feedFilterDefs.forEach(f => {
+      const isActive = this.currentFeedFilter === f.type
+      f.btn.clear()
+      f.btn.fillStyle(isActive ? 0x0077B6 : 0xE8F4FC, 1)
+      f.btn.fillRoundedRect(f.btn.x || 0, 0, 58, 24, 6)
+      f.text.setStyle({ fill: isActive ? '#FFFFFF' : '#0077B6' })
+    })
+  }
+
+  async loadActivityFeed() {
+    try {
+      const result = await this.api.getActivityFeed({
+        limit: 50,
+        type: this.currentFeedFilter
+      })
+      this.renderActivityFeed(result.events)
+    } catch (e) {
+      console.error('Failed to load activity feed:', e)
+    }
+  }
+
+  renderActivityFeed(events) {
+    this.feedEventsContainer.removeAll(true)
+    this.feedEvents = []
+
+    let yPos = 0
+    events.forEach((event, i) => {
+      const item = this.createFeedEvent(event, yPos)
+      this.feedEventsContainer.add(item)
+      this.feedEvents.push(item)
+      yPos += 55
+    })
+
+    if (events.length === 0) {
+      const empty = this.add.text(125, 50, 'No activity yet', {
+        font: '13px Fredoka',
+        fill: '#999999'
+      }).setOrigin(0.5)
+      this.feedEventsContainer.add(empty)
+    }
+  }
+
+  createFeedEvent(event, y) {
+    const container = this.add.container(0, y)
+    const width = 250
+
+    // Event type colors and icons
+    const typeConfig = {
+      task_assigned: { color: 0x2ECC71, icon: '📋' },
+      task_completed: { color: 0x27AE60, icon: '✓' },
+      task_queued: { color: 0x3498DB, icon: '📥' },
+      task_reassigned: { color: 0xF39C12, icon: '↻' },
+      agent_spawned: { color: 0x9B59B6, icon: '🐧' },
+      agent_stuck: { color: 0xE74C3C, icon: '⚠' },
+      project_created: { color: 0x8B4513, icon: '🏠' },
+      repo_cloned: { color: 0x6C5CE7, icon: '📦' },
+      pr_created: { color: 0x24292E, icon: '🐙' },
+      pr_merged: { color: 0x9B59B6, icon: '🎉' }
+    }
+
+    const config = typeConfig[event.type] || { color: 0x95A5A6, icon: '•' }
+
+    // Background
+    const bg = this.add.graphics()
+    bg.fillStyle(0xF8F8F8, 1)
+    bg.fillRoundedRect(0, 0, width, 50, 8)
+    bg.fillStyle(config.color, 1)
+    bg.fillRoundedRect(0, 0, 5, 50, { tl: 8, tr: 0, bl: 8, br: 0 })
+
+    // Icon
+    const icon = this.add.text(20, 25, config.icon, {
+      font: '16px Fredoka'
+    }).setOrigin(0.5)
+
+    // Title
+    const title = this.formatEventTitle(event)
+    const titleText = this.add.text(38, 10, title, {
+      font: 'bold 11px Fredoka',
+      fill: '#333333',
+      wordWrap: { width: width - 50 }
+    })
+
+    // Timestamp
+    const time = this.formatRelativeTime(event.timestamp)
+    const timeText = this.add.text(38, 32, time, {
+      font: '10px Fredoka',
+      fill: '#999999'
+    })
+
+    // User
+    if (event.user && event.user !== 'system') {
+      const userText = this.add.text(width - 8, 32, event.user, {
+        font: '10px Fredoka',
+        fill: '#0077B6'
+      }).setOrigin(1, 0)
+      container.add(userText)
+    }
+
+    // Click to navigate
+    const zone = this.add.zone(width/2, 25, width, 50).setInteractive({ useHandCursor: true })
+    zone.on('pointerup', () => this.handleFeedEventClick(event))
+    zone.on('pointerover', () => {
+      bg.clear()
+      bg.fillStyle(0xE8F4FC, 1)
+      bg.fillRoundedRect(0, 0, width, 50, 8)
+      bg.fillStyle(config.color, 1)
+      bg.fillRoundedRect(0, 0, 5, 50, { tl: 8, tr: 0, bl: 8, br: 0 })
+    })
+    zone.on('pointerout', () => {
+      bg.clear()
+      bg.fillStyle(0xF8F8F8, 1)
+      bg.fillRoundedRect(0, 0, width, 50, 8)
+      bg.fillStyle(config.color, 1)
+      bg.fillRoundedRect(0, 0, 5, 50, { tl: 8, tr: 0, bl: 8, br: 0 })
+    })
+
+    container.add([bg, icon, titleText, timeText, zone])
+    return container
+  }
+
+  formatEventTitle(event) {
+    switch (event.type) {
+      case 'task_assigned':
+        return `Task assigned to ${event.agent}`
+      case 'task_completed':
+        return `${event.agent} completed task`
+      case 'task_queued':
+        return `Task "${event.task}" queued`
+      case 'task_reassigned':
+        return `Task moved to ${event.toAgent}`
+      case 'agent_spawned':
+        return `Agent ${event.agent} spawned`
+      case 'agent_stuck':
+        return `${event.agent} needs help!`
+      case 'project_created':
+        return `Project "${event.project}" created`
+      case 'repo_cloned':
+        return `Repo cloned to ${event.project}`
+      case 'pr_created':
+        return `PR created: ${event.pr}`
+      case 'pr_merged':
+        return `PR merged: ${event.pr}`
+      default:
+        return event.type
+    }
+  }
+
+  formatRelativeTime(timestamp) {
+    const now = Date.now()
+    const time = new Date(timestamp).getTime()
+    const diff = now - time
+
+    if (diff < 60000) return 'Just now'
+    if (diff < 3600000) return `${Math.floor(diff / 60000)}m ago`
+    if (diff < 86400000) return `${Math.floor(diff / 3600000)}h ago`
+    return `${Math.floor(diff / 86400000)}d ago`
+  }
+
+  handleFeedEventClick(event) {
+    // Navigate to relevant agent/project
+    if (event.rig && this.gameScene) {
+      this.gameScene.panToVillage(event.rig)
+    }
+    if (event.agent) {
+      this.statusText.setText(`Viewing: ${event.agent}`)
+    }
+  }
+
+  addFeedEvent(event) {
+    // Called via WebSocket when new events arrive
+    if (this.feedPanel?.visible) {
+      this.loadActivityFeed()
+    }
+  }
+
+  // ===== TASK QUEUE / BACKLOG PANEL =====
+
+  createTaskQueuePanel() {
+    const height = 200
+    const x = 200
+    const y = this.cameras.main.height - height - 10
+
+    this.taskQueue = this.add.container(x, y)
+    this.taskQueue.setDepth(100)
+
+    // Toggle button
+    this.queueToggleBtn = this.add.container(0, -50)
+    const toggleBg = this.add.graphics()
+    toggleBg.fillStyle(0x3498DB, 0.9)
+    toggleBg.fillRoundedRect(0, 0, 120, 40, { tl: 10, tr: 10, bl: 0, br: 0 })
+    const toggleText = this.add.text(60, 20, '📥 QUEUE (0)', {
+      font: 'bold 12px Fredoka',
+      fill: '#FFFFFF'
+    }).setOrigin(0.5)
+    const toggleZone = this.add.zone(60, 20, 120, 40).setInteractive({ useHandCursor: true })
+    toggleZone.on('pointerup', () => this.toggleTaskQueue())
+    this.queueToggleBtn.add([toggleBg, toggleText, toggleZone])
+    this.queueToggleText = toggleText
+    this.taskQueue.add(this.queueToggleBtn)
+
+    // Queue panel (hidden initially)
+    this.queuePanel = this.add.container(0, 0)
+    this.queuePanel.setVisible(false)
+    this.taskQueue.add(this.queuePanel)
+
+    const width = this.cameras.main.width - 400
+
+    // Panel background
+    const bg = this.add.graphics()
+    this.drawGlossyPanel(bg, 0, 0, width, height, 0x3498DB, 16)
+    bg.fillStyle(0xFFFFFF, 0.98)
+    bg.fillRoundedRect(8, 50, width - 16, height - 60, 12)
+    this.queuePanel.add(bg)
+
+    // Title
+    const title = this.add.text(width/2, 26, 'TASK QUEUE', {
+      font: 'bold 16px Fredoka',
+      fill: '#FFFFFF',
+      stroke: '#1A5276',
+      strokeThickness: 2
+    }).setOrigin(0.5)
+    this.queuePanel.add(title)
+
+    // Add task button
+    const addBtn = this.add.graphics()
+    this.drawButton(addBtn, width - 100, 8, 80, 32, 0x2ECC71, true)
+    const addText = this.add.text(width - 60, 24, '+ ADD', {
+      font: 'bold 12px Fredoka',
+      fill: '#FFFFFF'
+    }).setOrigin(0.5)
+    const addZone = this.add.zone(width - 60, 24, 80, 32).setInteractive({ useHandCursor: true })
+    addZone.on('pointerup', () => this.showAddTaskDialog())
+    this.queuePanel.add([addBtn, addText, addZone])
+
+    // Close button
+    const closeBtn = this.add.graphics()
+    closeBtn.fillStyle(0xFF6B6B, 0.9)
+    closeBtn.fillCircle(width - 18, 48, 12)
+    const closeX = this.add.text(width - 18, 48, '×', {
+      font: 'bold 16px Fredoka',
+      fill: '#FFFFFF'
+    }).setOrigin(0.5)
+    const closeZone = this.add.zone(width - 18, 48, 24, 24).setInteractive({ useHandCursor: true })
+    closeZone.on('pointerup', () => this.toggleTaskQueue())
+    this.queuePanel.add([closeBtn, closeX, closeZone])
+
+    // Tasks container
+    this.queueTasksContainer = this.add.container(15, 60)
+    this.queuePanel.add(this.queueTasksContainer)
+    this.queueTasks = []
+
+    // Load initial data
+    this.loadTaskQueue()
+  }
+
+  toggleTaskQueue() {
+    const isVisible = this.queuePanel.visible
+    if (isVisible) {
+      this.tweens.add({
+        targets: this.queuePanel,
+        y: 250,
+        alpha: 0,
+        duration: 200,
+        ease: 'Back.easeIn',
+        onComplete: () => this.queuePanel.setVisible(false)
+      })
+    } else {
+      this.queuePanel.setVisible(true)
+      this.queuePanel.setY(250)
+      this.queuePanel.setAlpha(0)
+      this.tweens.add({
+        targets: this.queuePanel,
+        y: 0,
+        alpha: 1,
+        duration: 300,
+        ease: 'Back.easeOut'
+      })
+      this.loadTaskQueue()
+    }
+  }
+
+  async loadTaskQueue() {
+    try {
+      const result = await this.api.getTaskQueue()
+      this.renderTaskQueue(result.tasks)
+      this.queueToggleText.setText(`📥 QUEUE (${result.total})`)
+    } catch (e) {
+      console.error('Failed to load task queue:', e)
+    }
+  }
+
+  renderTaskQueue(tasks) {
+    this.queueTasksContainer.removeAll(true)
+    this.queueTasks = []
+
+    const cardWidth = 180
+    const cardHeight = 120
+
+    tasks.slice(0, 6).forEach((task, i) => {
+      const x = (i % 4) * (cardWidth + 10)
+      const y = Math.floor(i / 4) * (cardHeight + 10)
+      const card = this.createTaskCard(task, x, y, cardWidth, cardHeight)
+      this.queueTasksContainer.add(card)
+      this.queueTasks.push(card)
+    })
+
+    if (tasks.length === 0) {
+      const empty = this.add.text(200, 50, 'No tasks in queue\nAdd tasks or assign from here', {
+        font: '14px Fredoka',
+        fill: '#999999',
+        align: 'center'
+      }).setOrigin(0.5)
+      this.queueTasksContainer.add(empty)
+    }
+  }
+
+  createTaskCard(task, x, y, width, height) {
+    const container = this.add.container(x, y)
+
+    // Priority color
+    const priorityColors = [0x95A5A6, 0x3498DB, 0xF39C12, 0xE74C3C]
+    const color = priorityColors[Math.min(task.priority, 3)]
+
+    // Card background
+    const bg = this.add.graphics()
+    bg.fillStyle(0xFFFFFF, 1)
+    bg.fillRoundedRect(0, 0, width, height, 10)
+    bg.lineStyle(2, color, 1)
+    bg.strokeRoundedRect(0, 0, width, height, 10)
+    bg.fillStyle(color, 1)
+    bg.fillRoundedRect(0, 0, width, 6, { tl: 10, tr: 10, bl: 0, br: 0 })
+
+    // Title
+    const title = this.add.text(10, 15, task.title.substring(0, 25) + (task.title.length > 25 ? '...' : ''), {
+      font: 'bold 12px Fredoka',
+      fill: '#333333'
+    })
+
+    // Project badge
+    const projectBadge = this.add.graphics()
+    projectBadge.fillStyle(0xE8F4FC, 1)
+    projectBadge.fillRoundedRect(10, 38, width - 20, 20, 5)
+    const projectText = this.add.text(width/2, 48, task.project, {
+      font: '10px Fredoka',
+      fill: '#0077B6'
+    }).setOrigin(0.5)
+
+    // Assign button
+    const assignBtn = this.add.graphics()
+    this.drawButton(assignBtn, 10, height - 40, width - 20, 30, 0x2ECC71, true)
+    const assignText = this.add.text(width/2, height - 25, 'ASSIGN', {
+      font: 'bold 11px Fredoka',
+      fill: '#FFFFFF'
+    }).setOrigin(0.5)
+    const assignZone = this.add.zone(width/2, height - 25, width - 20, 30).setInteractive({ useHandCursor: true })
+    assignZone.on('pointerup', () => this.showAssignTaskDialog(task))
+
+    // Drag handle (visual only for now)
+    const handle = this.add.text(width - 15, 15, '⋮', {
+      font: '16px Fredoka',
+      fill: '#CCCCCC'
+    }).setOrigin(0.5)
+
+    container.add([bg, title, projectBadge, projectText, assignBtn, assignText, assignZone, handle])
+    container.task = task
+
+    return container
+  }
+
+  async showAddTaskDialog() {
+    const title = await this.showModal({
+      title: 'ADD TASK',
+      message: 'Enter task description',
+      inputType: 'text',
+      placeholder: 'Fix the login bug...'
+    })
+    if (!title) return
+
+    const project = await this.showModal({
+      title: 'PROJECT',
+      message: 'Which project? (Leave blank for default)',
+      inputType: 'text',
+      placeholder: 'project-name'
+    })
+
+    try {
+      await this.api.addTask({
+        title,
+        project: project || 'default',
+        priority: 0
+      })
+      this.loadTaskQueue()
+      this.showNotification('success', 'Task Added', `"${title}" added to queue`)
+    } catch (e) {
+      this.showNotification('error', 'Failed', e.message)
+    }
+  }
+
+  async showAssignTaskDialog(task) {
+    // Get available polecats
+    try {
+      const status = await this.api.getStatus()
+      const idlePolecats = status.polecats.filter(p => p.status === 'idle')
+
+      if (idlePolecats.length === 0) {
+        await this.showModal({
+          title: 'NO IDLE AGENTS',
+          message: 'No idle polecats available. Spawn a new one or wait for one to finish.',
+          showCancel: false
+        })
+        return
+      }
+
+      // Show picker
+      const choice = await this.showAgentPickerForTask(idlePolecats, task)
+      if (!choice) return
+
+      await this.api.assignTask(task.id, choice.agent, choice.rig)
+      this.loadTaskQueue()
+      this.showNotification('success', 'Task Assigned', `"${task.title}" assigned to ${choice.agent}`)
+    } catch (e) {
+      this.showNotification('error', 'Failed', e.message)
+    }
+  }
+
+  showAgentPickerForTask(polecats, task) {
+    return new Promise((resolve) => {
+      const width = this.cameras.main.width
+      const height = this.cameras.main.height
+      const modalWidth = 320
+      const modalHeight = 150 + Math.min(polecats.length, 5) * 45
+
+      const picker = this.add.container(width/2, height/2)
+      picker.setDepth(1000)
+
+      const backdrop = this.add.graphics()
+      backdrop.fillStyle(0x000000, 0.6)
+      backdrop.fillRect(-width/2, -height/2, width, height)
+      backdrop.setInteractive(new Phaser.Geom.Rectangle(-width/2, -height/2, width, height), Phaser.Geom.Rectangle.Contains)
+      backdrop.on('pointerup', () => {
+        picker.destroy()
+        resolve(null)
+      })
+
+      const panel = this.add.graphics()
+      this.drawGlossyPanel(panel, -modalWidth/2, -modalHeight/2, modalWidth, modalHeight, 0x2ECC71, 18)
+      panel.fillStyle(0xFFFFFF, 0.98)
+      panel.fillRoundedRect(-modalWidth/2 + 10, -modalHeight/2 + 55, modalWidth - 20, modalHeight - 70, 10)
+
+      const title = this.add.text(0, -modalHeight/2 + 28, 'ASSIGN TO AGENT', {
+        font: 'bold 18px Fredoka',
+        fill: '#FFFFFF'
+      }).setOrigin(0.5)
+
+      picker.add([backdrop, panel, title])
+
+      let yPos = -modalHeight/2 + 70
+      polecats.slice(0, 5).forEach((p) => {
+        const btn = this.add.graphics()
+        this.drawButton(btn, -modalWidth/2 + 20, yPos, modalWidth - 40, 38, 0x3498DB, true)
+        const btnText = this.add.text(0, yPos + 19, `${p.name} (${p.rig})`, {
+          font: 'bold 12px Fredoka',
+          fill: '#FFFFFF'
+        }).setOrigin(0.5)
+        const btnZone = this.add.zone(0, yPos + 19, modalWidth - 40, 38).setInteractive({ useHandCursor: true })
+        btnZone.on('pointerup', () => {
+          picker.destroy()
+          resolve({ agent: p.name, rig: p.rig })
+        })
+        picker.add([btn, btnText, btnZone])
+        yPos += 45
+      })
+
+      picker.setScale(0.8)
+      picker.setAlpha(0)
+      this.tweens.add({
+        targets: picker,
+        scale: 1,
+        alpha: 1,
+        duration: 200,
+        ease: 'Back.easeOut'
+      })
+    })
+  }
+
+  // ===== COST DASHBOARD PANEL =====
+
+  createCostDashboardPanel() {
+    const width = 300
+    const height = 400
+    const x = this.cameras.main.width - width - 10
+    const y = 70
+
+    this.costDashboard = this.add.container(x, y)
+    this.costDashboard.setDepth(100)
+
+    // Toggle button (positioned near settings)
+    this.costToggleBtn = this.add.container(0, 0)
+    const toggleBg = this.add.graphics()
+    toggleBg.fillStyle(0x27AE60, 0.9)
+    toggleBg.fillRoundedRect(0, 0, 40, 40, 10)
+    toggleBg.fillStyle(0xFFFFFF, 0.15)
+    toggleBg.fillRoundedRect(2, 2, 36, 18, { tl: 8, tr: 8, bl: 0, br: 0 })
+    const toggleIcon = this.add.text(20, 20, '💰', { font: '18px Fredoka' }).setOrigin(0.5)
+    const toggleZone = this.add.zone(20, 20, 40, 40).setInteractive({ useHandCursor: true })
+    toggleZone.on('pointerup', () => this.toggleCostDashboard())
+    this.costToggleBtn.add([toggleBg, toggleIcon, toggleZone])
+    this.costDashboard.add(this.costToggleBtn)
+
+    // Dashboard panel (hidden initially)
+    this.costPanel = this.add.container(0, 50)
+    this.costPanel.setVisible(false)
+    this.costDashboard.add(this.costPanel)
+
+    // Panel background
+    const bg = this.add.graphics()
+    this.drawGlossyPanel(bg, 0, 0, width, height, 0x27AE60, 16)
+    bg.fillStyle(0xFFFFFF, 0.98)
+    bg.fillRoundedRect(8, 50, width - 16, height - 60, 12)
+    this.costPanel.add(bg)
+
+    // Title
+    const title = this.add.text(width/2, 26, 'COST DASHBOARD', {
+      font: 'bold 16px Fredoka',
+      fill: '#FFFFFF',
+      stroke: '#1E8449',
+      strokeThickness: 2
+    }).setOrigin(0.5)
+    this.costPanel.add(title)
+
+    // Close button
+    const closeBtn = this.add.graphics()
+    closeBtn.fillStyle(0xFF6B6B, 0.9)
+    closeBtn.fillCircle(width - 18, 18, 12)
+    const closeX = this.add.text(width - 18, 18, '×', {
+      font: 'bold 16px Fredoka',
+      fill: '#FFFFFF'
+    }).setOrigin(0.5)
+    const closeZone = this.add.zone(width - 18, 18, 24, 24).setInteractive({ useHandCursor: true })
+    closeZone.on('pointerup', () => this.toggleCostDashboard())
+    this.costPanel.add([closeBtn, closeX, closeZone])
+
+    // Stats container
+    this.costStatsContainer = this.add.container(15, 60)
+    this.costPanel.add(this.costStatsContainer)
+
+    // Export button
+    const exportBtn = this.add.graphics()
+    this.drawButton(exportBtn, 10, height - 50, width - 20, 36, 0x3498DB, true)
+    const exportText = this.add.text(width/2, height - 32, '📥 EXPORT CSV', {
+      font: 'bold 12px Fredoka',
+      fill: '#FFFFFF'
+    }).setOrigin(0.5)
+    const exportZone = this.add.zone(width/2, height - 32, width - 20, 36).setInteractive({ useHandCursor: true })
+    exportZone.on('pointerup', () => this.exportCostCSV())
+    this.costPanel.add([exportBtn, exportText, exportZone])
+
+    // Load initial data
+    this.loadCostDashboard()
+  }
+
+  toggleCostDashboard() {
+    const isVisible = this.costPanel.visible
+    if (isVisible) {
+      this.tweens.add({
+        targets: this.costPanel,
+        x: 300,
+        alpha: 0,
+        duration: 200,
+        ease: 'Back.easeIn',
+        onComplete: () => this.costPanel.setVisible(false)
+      })
+    } else {
+      this.costPanel.setVisible(true)
+      this.costPanel.setX(300)
+      this.costPanel.setAlpha(0)
+      this.tweens.add({
+        targets: this.costPanel,
+        x: 0,
+        alpha: 1,
+        duration: 300,
+        ease: 'Back.easeOut'
+      })
+      this.loadCostDashboard()
+    }
+  }
+
+  async loadCostDashboard() {
+    try {
+      const data = await this.api.getCostDashboard()
+      this.renderCostDashboard(data)
+    } catch (e) {
+      console.error('Failed to load cost dashboard:', e)
+    }
+  }
+
+  renderCostDashboard(data) {
+    this.costStatsContainer.removeAll(true)
+
+    const width = 270
+    let yPos = 0
+
+    // Today stat
+    const todayCard = this.createStatCard('TODAY', data.today.tokens, data.today.cost, 0, yPos, width/3 - 5)
+    const weekCard = this.createStatCard('WEEK', data.week.tokens, data.week.cost, width/3, yPos, width/3 - 5)
+    const monthCard = this.createStatCard('MONTH', data.month.tokens, data.month.cost, width*2/3, yPos, width/3 - 5)
+    this.costStatsContainer.add([todayCard, weekCard, monthCard])
+    yPos += 75
+
+    // Sparkline
+    const sparkline = this.createSparkline(data.sparkline, 0, yPos, width, 50)
+    this.costStatsContainer.add(sparkline)
+    yPos += 65
+
+    // By project
+    const projectTitle = this.add.text(0, yPos, 'BY PROJECT', {
+      font: 'bold 11px Fredoka',
+      fill: '#666666'
+    })
+    this.costStatsContainer.add(projectTitle)
+    yPos += 20
+
+    data.byProject.slice(0, 3).forEach(p => {
+      const row = this.createCostRow(p.name, p.tokens, p.cost, 0, yPos, width)
+      this.costStatsContainer.add(row)
+      yPos += 28
+    })
+
+    yPos += 10
+
+    // By agent
+    const agentTitle = this.add.text(0, yPos, 'BY AGENT', {
+      font: 'bold 11px Fredoka',
+      fill: '#666666'
+    })
+    this.costStatsContainer.add(agentTitle)
+    yPos += 20
+
+    data.byAgent.slice(0, 3).forEach(a => {
+      const row = this.createCostRow(a.name, a.tokens, a.cost, 0, yPos, width)
+      this.costStatsContainer.add(row)
+      yPos += 28
+    })
+
+    // Budget alert
+    if (data.budgetAlert) {
+      yPos += 10
+      const alert = this.add.text(width/2, yPos, '⚠ Approaching budget limit!', {
+        font: 'bold 12px Fredoka',
+        fill: '#E74C3C'
+      }).setOrigin(0.5)
+      this.costStatsContainer.add(alert)
+    }
+  }
+
+  createStatCard(label, tokens, cost, x, y, width) {
+    const container = this.add.container(x, y)
+
+    const bg = this.add.graphics()
+    bg.fillStyle(0xF8F8F8, 1)
+    bg.fillRoundedRect(0, 0, width, 65, 8)
+
+    const labelText = this.add.text(width/2, 10, label, {
+      font: 'bold 10px Fredoka',
+      fill: '#999999'
+    }).setOrigin(0.5)
+
+    const tokenText = this.add.text(width/2, 30, this.formatNumber(tokens), {
+      font: 'bold 16px Fredoka',
+      fill: '#333333'
+    }).setOrigin(0.5)
+
+    const costText = this.add.text(width/2, 50, `$${cost.toFixed(2)}`, {
+      font: '11px Fredoka',
+      fill: '#27AE60'
+    }).setOrigin(0.5)
+
+    container.add([bg, labelText, tokenText, costText])
+    return container
+  }
+
+  createSparkline(data, x, y, width, height) {
+    const container = this.add.container(x, y)
+
+    const bg = this.add.graphics()
+    bg.fillStyle(0xF8F8F8, 1)
+    bg.fillRoundedRect(0, 0, width, height, 8)
+
+    // Find max value for scaling
+    const maxVal = Math.max(...data.map(d => d.tokens), 1)
+    const stepX = width / (data.length - 1 || 1)
+
+    // Draw line
+    const line = this.add.graphics()
+    line.lineStyle(2, 0x27AE60, 1)
+    line.beginPath()
+
+    data.forEach((d, i) => {
+      const px = 5 + i * (width - 10) / (data.length - 1 || 1)
+      const py = height - 5 - (d.tokens / maxVal) * (height - 15)
+      if (i === 0) {
+        line.moveTo(px, py)
+      } else {
+        line.lineTo(px, py)
+      }
+    })
+    line.strokePath()
+
+    // Draw dots
+    data.forEach((d, i) => {
+      const px = 5 + i * (width - 10) / (data.length - 1 || 1)
+      const py = height - 5 - (d.tokens / maxVal) * (height - 15)
+      line.fillStyle(0x27AE60, 1)
+      line.fillCircle(px, py, 3)
+    })
+
+    container.add([bg, line])
+    return container
+  }
+
+  createCostRow(name, tokens, cost, x, y, width) {
+    const container = this.add.container(x, y)
+
+    const nameText = this.add.text(0, 0, name.substring(0, 15) + (name.length > 15 ? '...' : ''), {
+      font: '11px Fredoka',
+      fill: '#333333'
+    })
+
+    const tokenText = this.add.text(width - 60, 0, this.formatNumber(tokens), {
+      font: '11px Fredoka',
+      fill: '#666666'
+    }).setOrigin(1, 0)
+
+    const costText = this.add.text(width, 0, `$${cost.toFixed(2)}`, {
+      font: '11px Fredoka',
+      fill: '#27AE60'
+    }).setOrigin(1, 0)
+
+    container.add([nameText, tokenText, costText])
+    return container
+  }
+
+  formatNumber(num) {
+    if (num >= 1000000) return `${(num / 1000000).toFixed(1)}M`
+    if (num >= 1000) return `${(num / 1000).toFixed(1)}K`
+    return num.toString()
+  }
+
+  exportCostCSV() {
+    const url = this.api.getCostExportUrl()
+    window.open(url, '_blank')
+  }
+
+  // ===== AGENT OUTPUT VIEWER =====
+
+  createAgentOutputViewer() {
+    // This modal is created on-demand when viewing output
+    this.outputViewer = null
+  }
+
+  async showAgentOutput(agentId, rigName) {
+    const width = this.cameras.main.width
+    const height = this.cameras.main.height
+    const modalWidth = 600
+    const modalHeight = 500
+
+    // Destroy existing viewer if open
+    if (this.outputViewer) {
+      this.outputViewer.destroy()
+    }
+
+    this.outputViewer = this.add.container(width/2, height/2)
+    this.outputViewer.setDepth(1000)
+
+    // Backdrop
+    const backdrop = this.add.graphics()
+    backdrop.fillStyle(0x000000, 0.7)
+    backdrop.fillRect(-width/2, -height/2, width, height)
+    backdrop.setInteractive(new Phaser.Geom.Rectangle(-width/2, -height/2, width, height), Phaser.Geom.Rectangle.Contains)
+
+    // Panel
+    const panel = this.add.graphics()
+    this.drawGlossyPanel(panel, -modalWidth/2, -modalHeight/2, modalWidth, modalHeight, 0x2C3E50, 20)
+    panel.fillStyle(0x1E272E, 1)
+    panel.fillRoundedRect(-modalWidth/2 + 10, -modalHeight/2 + 60, modalWidth - 20, modalHeight - 80, 12)
+
+    // Title
+    const title = this.add.text(0, -modalHeight/2 + 30, `AGENT OUTPUT: ${agentId}`, {
+      font: 'bold 18px Fredoka',
+      fill: '#FFFFFF',
+      stroke: '#1A252F',
+      strokeThickness: 2
+    }).setOrigin(0.5)
+
+    // Close button
+    const closeBtn = this.add.graphics()
+    closeBtn.fillStyle(0xFF6B6B, 0.9)
+    closeBtn.fillCircle(modalWidth/2 - 25, -modalHeight/2 + 25, 14)
+    const closeX = this.add.text(modalWidth/2 - 25, -modalHeight/2 + 25, '×', {
+      font: 'bold 18px Fredoka',
+      fill: '#FFFFFF'
+    }).setOrigin(0.5)
+    const closeZone = this.add.zone(modalWidth/2 - 25, -modalHeight/2 + 25, 28, 28).setInteractive({ useHandCursor: true })
+    closeZone.on('pointerup', () => {
+      this.outputViewer.destroy()
+      this.outputViewer = null
+    })
+
+    this.outputViewer.add([backdrop, panel, title, closeBtn, closeX, closeZone])
+
+    // Loading text
+    const loading = this.add.text(0, 0, 'Loading output...', {
+      font: '14px Fredoka',
+      fill: '#7F8C8D'
+    }).setOrigin(0.5)
+    this.outputViewer.add(loading)
+
+    // Fetch agent status/output
+    try {
+      const status = await this.api.getHook(agentId)
+      loading.destroy()
+
+      // Output text area
+      const outputContent = this.formatAgentOutput(status)
+      const outputText = this.add.text(-modalWidth/2 + 25, -modalHeight/2 + 75, outputContent, {
+        font: '12px monospace',
+        fill: '#2ECC71',
+        wordWrap: { width: modalWidth - 50 }
+      })
+      this.outputViewer.add(outputText)
+
+      // Action buttons at bottom
+      const btnY = modalHeight/2 - 45
+
+      // Copy button
+      const copyBtn = this.add.graphics()
+      this.drawButton(copyBtn, -modalWidth/2 + 20, btnY, 120, 36, 0x3498DB, true)
+      const copyText = this.add.text(-modalWidth/2 + 80, btnY + 18, '📋 COPY', {
+        font: 'bold 12px Fredoka',
+        fill: '#FFFFFF'
+      }).setOrigin(0.5)
+      const copyZone = this.add.zone(-modalWidth/2 + 80, btnY + 18, 120, 36).setInteractive({ useHandCursor: true })
+      copyZone.on('pointerup', () => {
+        navigator.clipboard.writeText(outputContent)
+        this.showNotification('success', 'Copied', 'Output copied to clipboard')
+      })
+      this.outputViewer.add([copyBtn, copyText, copyZone])
+
+      // View diff button (placeholder)
+      const diffBtn = this.add.graphics()
+      this.drawButton(diffBtn, -modalWidth/2 + 150, btnY, 120, 36, 0x9B59B6, true)
+      const diffText = this.add.text(-modalWidth/2 + 210, btnY + 18, '📝 DIFF', {
+        font: 'bold 12px Fredoka',
+        fill: '#FFFFFF'
+      }).setOrigin(0.5)
+      this.outputViewer.add([diffBtn, diffText])
+
+    } catch (e) {
+      loading.setText(`Failed to load: ${e.message}`)
+      loading.setStyle({ fill: '#E74C3C' })
+    }
+
+    // Animate in
+    this.outputViewer.setScale(0.8)
+    this.outputViewer.setAlpha(0)
+    this.tweens.add({
+      targets: this.outputViewer,
+      scale: 1,
+      alpha: 1,
+      duration: 200,
+      ease: 'Back.easeOut'
+    })
+  }
+
+  formatAgentOutput(status) {
+    let output = ''
+    output += `Status: ${status.status || 'unknown'}\n`
+    output += `Task: ${status.hook || 'None'}\n\n`
+
+    if (status.assignedAt) {
+      output += `Started: ${new Date(status.assignedAt).toLocaleString()}\n`
+    }
+
+    if (status.tokensUsed) {
+      output += `Tokens: ${status.tokensUsed.toLocaleString()}\n`
+    }
+
+    if (status.progress !== undefined) {
+      output += `Progress: ${status.progress}%\n`
+    }
+
+    if (status.stuckReason) {
+      output += `\n⚠ STUCK: ${status.stuckReason}\n`
+      if (status.stuckAt) {
+        output += `Since: ${new Date(status.stuckAt).toLocaleString()}\n`
+      }
+    }
+
+    if (status.completedTask) {
+      output += `\n✓ Completed: ${status.completedTask}\n`
+      if (status.completedAt) {
+        output += `At: ${new Date(status.completedAt).toLocaleString()}\n`
+      }
+    }
+
+    output += '\n--- Logs would appear here ---\n'
+    output += '(Full log integration coming soon)'
+
+    return output
+  }
+
+  // ===== GITHUB INTEGRATION PANEL =====
+
+  createGitHubPanel() {
+    const width = 320
+    const height = 450
+    const x = this.cameras.main.width - width - 60
+    const y = 70
+
+    this.githubPanel = this.add.container(x, y)
+    this.githubPanel.setDepth(100)
+
+    // Toggle button
+    this.githubToggleBtn = this.add.container(0, 0)
+    const toggleBg = this.add.graphics()
+    toggleBg.fillStyle(0x24292E, 0.9)
+    toggleBg.fillRoundedRect(0, 0, 40, 40, 10)
+    toggleBg.fillStyle(0xFFFFFF, 0.15)
+    toggleBg.fillRoundedRect(2, 2, 36, 18, { tl: 8, tr: 8, bl: 0, br: 0 })
+    const toggleIcon = this.add.text(20, 20, '🐙', { font: '18px Fredoka' }).setOrigin(0.5)
+    const toggleZone = this.add.zone(20, 20, 40, 40).setInteractive({ useHandCursor: true })
+    toggleZone.on('pointerup', () => this.toggleGitHubPanel())
+    this.githubToggleBtn.add([toggleBg, toggleIcon, toggleZone])
+    this.githubPanel.add(this.githubToggleBtn)
+
+    // Panel (hidden initially)
+    this.githubPanelContent = this.add.container(50, 0)
+    this.githubPanelContent.setVisible(false)
+    this.githubPanel.add(this.githubPanelContent)
+
+    // Panel background
+    const bg = this.add.graphics()
+    this.drawGlossyPanel(bg, 0, 0, width, height, 0x24292E, 16)
+    bg.fillStyle(0xFFFFFF, 0.98)
+    bg.fillRoundedRect(8, 50, width - 16, height - 60, 12)
+    this.githubPanelContent.add(bg)
+
+    // Title
+    const title = this.add.text(width/2, 26, 'PULL REQUESTS', {
+      font: 'bold 16px Fredoka',
+      fill: '#FFFFFF',
+      stroke: '#1A1F24',
+      strokeThickness: 2
+    }).setOrigin(0.5)
+    this.githubPanelContent.add(title)
+
+    // Filter tabs
+    this.prFilters = this.add.container(15, 55)
+    const filters = [
+      { label: 'All', status: null },
+      { label: 'Open', status: 'open' },
+      { label: 'Merged', status: 'merged' },
+      { label: 'Draft', status: 'draft' }
+    ]
+    this.currentPRFilter = null
+
+    filters.forEach((f, i) => {
+      const btnX = i * 72
+      const btn = this.add.graphics()
+      const isActive = this.currentPRFilter === f.status
+      btn.fillStyle(isActive ? 0x24292E : 0xE8F4FC, 1)
+      btn.fillRoundedRect(btnX, 0, 68, 24, 6)
+      const text = this.add.text(btnX + 34, 12, f.label, {
+        font: 'bold 10px Fredoka',
+        fill: isActive ? '#FFFFFF' : '#24292E'
+      }).setOrigin(0.5)
+      const zone = this.add.zone(btnX + 34, 12, 68, 24).setInteractive({ useHandCursor: true })
+      zone.on('pointerup', () => {
+        this.currentPRFilter = f.status
+        this.loadGitHubPRs()
+        this.updatePRFilters()
+      })
+      this.prFilters.add([btn, text, zone])
+      f.btn = btn
+      f.text = text
+    })
+    this.prFilterDefs = filters
+    this.githubPanelContent.add(this.prFilters)
+
+    // Close button
+    const closeBtn = this.add.graphics()
+    closeBtn.fillStyle(0xFF6B6B, 0.9)
+    closeBtn.fillCircle(width - 18, 18, 12)
+    const closeX = this.add.text(width - 18, 18, '×', {
+      font: 'bold 16px Fredoka',
+      fill: '#FFFFFF'
+    }).setOrigin(0.5)
+    const closeZone = this.add.zone(width - 18, 18, 24, 24).setInteractive({ useHandCursor: true })
+    closeZone.on('pointerup', () => this.toggleGitHubPanel())
+    this.githubPanelContent.add([closeBtn, closeX, closeZone])
+
+    // Track PR button
+    const trackBtn = this.add.graphics()
+    this.drawButton(trackBtn, 10, height - 50, width - 20, 36, 0x2ECC71, true)
+    const trackText = this.add.text(width/2, height - 32, '+ TRACK PR', {
+      font: 'bold 12px Fredoka',
+      fill: '#FFFFFF'
+    }).setOrigin(0.5)
+    const trackZone = this.add.zone(width/2, height - 32, width - 20, 36).setInteractive({ useHandCursor: true })
+    trackZone.on('pointerup', () => this.showTrackPRDialog())
+    this.githubPanelContent.add([trackBtn, trackText, trackZone])
+
+    // PRs container
+    this.prListContainer = this.add.container(15, 85)
+    this.githubPanelContent.add(this.prListContainer)
+    this.prList = []
+
+    // Scrolling mask
+    const maskShape = this.add.graphics()
+    maskShape.fillStyle(0xFFFFFF)
+    maskShape.fillRect(x + 58, y + 85, width - 16, height - 150)
+    const mask = maskShape.createGeometryMask()
+    maskShape.setVisible(false) // Hide the mask shape itself
+    this.prListContainer.setMask(mask)
+
+    // Load initial data
+    this.loadGitHubPRs()
+  }
+
+  toggleGitHubPanel() {
+    const isVisible = this.githubPanelContent.visible
+    if (isVisible) {
+      this.tweens.add({
+        targets: this.githubPanelContent,
+        x: 350,
+        alpha: 0,
+        duration: 200,
+        ease: 'Back.easeIn',
+        onComplete: () => this.githubPanelContent.setVisible(false)
+      })
+    } else {
+      this.githubPanelContent.setVisible(true)
+      this.githubPanelContent.setX(350)
+      this.githubPanelContent.setAlpha(0)
+      this.tweens.add({
+        targets: this.githubPanelContent,
+        x: 50,
+        alpha: 1,
+        duration: 300,
+        ease: 'Back.easeOut'
+      })
+      this.loadGitHubPRs()
+    }
+  }
+
+  updatePRFilters() {
+    this.prFilterDefs.forEach((f, i) => {
+      const isActive = this.currentPRFilter === f.status
+      const btnX = i * 72
+      f.btn.clear()
+      f.btn.fillStyle(isActive ? 0x24292E : 0xE8F4FC, 1)
+      f.btn.fillRoundedRect(btnX, 0, 68, 24, 6)
+      f.text.setStyle({ fill: isActive ? '#FFFFFF' : '#24292E' })
+    })
+  }
+
+  async loadGitHubPRs() {
+    try {
+      const result = await this.api.getGitHubPRs({
+        status: this.currentPRFilter
+      })
+      this.renderGitHubPRs(result.prs)
+    } catch (e) {
+      console.error('Failed to load GitHub PRs:', e)
+    }
+  }
+
+  renderGitHubPRs(prs) {
+    this.prListContainer.removeAll(true)
+    this.prList = []
+
+    let yPos = 0
+    prs.slice(0, 6).forEach((pr) => {
+      const card = this.createPRCard(pr, yPos)
+      this.prListContainer.add(card)
+      this.prList.push(card)
+      yPos += 75
+    })
+
+    if (prs.length === 0) {
+      const empty = this.add.text(140, 80, 'No pull requests tracked\nClick "+ Track PR" to add one', {
+        font: '13px Fredoka',
+        fill: '#999999',
+        align: 'center'
+      }).setOrigin(0.5)
+      this.prListContainer.add(empty)
+    }
+  }
+
+  createPRCard(pr, y) {
+    const container = this.add.container(0, y)
+    const width = 290
+
+    // Status colors
+    const statusColors = {
+      open: 0x2ECC71,
+      merged: 0x9B59B6,
+      closed: 0xE74C3C,
+      draft: 0x95A5A6
+    }
+    const color = statusColors[pr.status] || statusColors.open
+
+    // Card background
+    const bg = this.add.graphics()
+    bg.fillStyle(0xF8F8F8, 1)
+    bg.fillRoundedRect(0, 0, width, 68, 10)
+    bg.fillStyle(color, 1)
+    bg.fillRoundedRect(0, 0, 5, 68, { tl: 10, tr: 0, bl: 10, br: 0 })
+
+    // PR number
+    const number = this.add.text(15, 8, `#${pr.number || '?'}`, {
+      font: 'bold 11px Fredoka',
+      fill: '#666666'
+    })
+
+    // Status badge
+    const badge = this.add.graphics()
+    badge.fillStyle(color, 0.2)
+    badge.fillRoundedRect(width - 65, 5, 55, 18, 5)
+    const badgeText = this.add.text(width - 37, 14, pr.isDraft ? 'DRAFT' : pr.status.toUpperCase(), {
+      font: 'bold 8px Fredoka',
+      fill: Phaser.Display.Color.ValueToColor(color).rgba.replace(/,1\)$/, ',1)')
+    }).setOrigin(0.5)
+    badgeText.setStyle({ fill: `#${color.toString(16).padStart(6, '0')}` })
+
+    // Title
+    const title = this.add.text(15, 24, pr.title.substring(0, 35) + (pr.title.length > 35 ? '...' : ''), {
+      font: 'bold 11px Fredoka',
+      fill: '#333333'
+    })
+
+    // Stats row
+    const statsText = this.add.text(15, 45, `📝 ${pr.commits || 0} commits | 📄 ${pr.changedFiles || 0} files`, {
+      font: '9px Fredoka',
+      fill: '#999999'
+    })
+
+    // CI status indicator
+    const ciColors = { pending: 0xF39C12, success: 0x2ECC71, failure: 0xE74C3C }
+    const ciColor = ciColors[pr.ciStatus] || ciColors.pending
+    const ciDot = this.add.graphics()
+    ciDot.fillStyle(ciColor, 1)
+    ciDot.fillCircle(width - 20, 50, 5)
+
+    // Agent info
+    if (pr.agent) {
+      const agentText = this.add.text(width - 30, 45, `by ${pr.agent}`, {
+        font: '9px Fredoka',
+        fill: '#0077B6'
+      }).setOrigin(1, 0)
+      container.add(agentText)
+    }
+
+    // Click to open PR
+    const zone = this.add.zone(width/2, 34, width, 68).setInteractive({ useHandCursor: true })
+    zone.on('pointerup', () => {
+      window.open(pr.url, '_blank')
+    })
+    zone.on('pointerover', () => {
+      bg.clear()
+      bg.fillStyle(0xE8F4FC, 1)
+      bg.fillRoundedRect(0, 0, width, 68, 10)
+      bg.fillStyle(color, 1)
+      bg.fillRoundedRect(0, 0, 5, 68, { tl: 10, tr: 0, bl: 10, br: 0 })
+    })
+    zone.on('pointerout', () => {
+      bg.clear()
+      bg.fillStyle(0xF8F8F8, 1)
+      bg.fillRoundedRect(0, 0, width, 68, 10)
+      bg.fillStyle(color, 1)
+      bg.fillRoundedRect(0, 0, 5, 68, { tl: 10, tr: 0, bl: 10, br: 0 })
+    })
+
+    container.add([bg, number, badge, badgeText, title, statsText, ciDot, zone])
+    container.pr = pr
+
+    return container
+  }
+
+  async showTrackPRDialog() {
+    const url = await this.showModal({
+      title: 'TRACK PR',
+      message: 'Enter the GitHub PR URL',
+      inputType: 'text',
+      placeholder: 'https://github.com/user/repo/pull/123'
+    })
+    if (!url) return
+
+    const title = await this.showModal({
+      title: 'PR TITLE',
+      message: 'Enter a title for this PR',
+      inputType: 'text',
+      placeholder: 'Fix the login bug'
+    })
+    if (!title) return
+
+    try {
+      await this.api.trackPR({
+        url,
+        title,
+        project: 'default',
+        status: 'open'
+      })
+      this.loadGitHubPRs()
+      this.showNotification('success', 'PR Tracked', `Now tracking: ${title}`)
+    } catch (e) {
+      this.showNotification('error', 'Failed', e.message)
+    }
+  }
+
+  // ===== BATCH OPERATIONS =====
+
+  showBatchPanel(units) {
+    this.selectedUnits = units
+
+    if (!this.batchPanel) {
+      this.createBatchPanel()
+    }
+
+    // Update count
+    this.batchCountText.setText(`${units.length} agents selected`)
+
+    // Show panel
+    this.batchPanel.setVisible(true)
+    this.batchPanel.setX(-250)
+    this.batchPanel.setAlpha(0)
+
+    const centerX = (this.cameras.main.width - 220) / 2
+    const centerY = (this.cameras.main.height - 200) / 2
+    this.batchPanel.setPosition(centerX, centerY)
+
+    this.tweens.add({
+      targets: this.batchPanel,
+      alpha: 1,
+      duration: 200,
+      ease: 'Back.easeOut'
+    })
+  }
+
+  hideBatchPanel() {
+    if (this.batchPanel) {
+      this.batchPanel.setVisible(false)
+    }
+  }
+
+  createBatchPanel() {
+    const width = 220
+    const height = 250
+
+    this.batchPanel = this.add.container(0, 0)
+    this.batchPanel.setDepth(800)
+    this.batchPanel.setVisible(false)
+
+    // Card background
+    const bg = this.add.graphics()
+    bg.fillStyle(0x87CEEB, 0.3)
+    bg.fillRoundedRect(-5, -5, width + 10, height + 10, 24)
+    bg.fillStyle(0x000000, 0.25)
+    bg.fillRoundedRect(5, 5, width, height, 22)
+    bg.fillStyle(0xFFFFFF, 0.95)
+    bg.fillRoundedRect(0, 0, width, height, 22)
+    bg.fillStyle(0xF39C12, 1)
+    bg.fillRoundedRect(0, 0, width, 55, { tl: 22, tr: 22, bl: 0, br: 0 })
+    bg.fillStyle(0xE67E22, 1)
+    bg.fillRoundedRect(0, 35, width, 20, 0)
+    bg.lineStyle(3, 0xF39C12, 1)
+    bg.strokeRoundedRect(0, 0, width, height, 22)
+
+    // Title
+    const title = this.add.text(width/2, 28, 'BATCH ACTIONS', {
+      font: 'bold 18px Fredoka',
+      fill: '#FFFFFF',
+      stroke: '#C0392B',
+      strokeThickness: 2
+    }).setOrigin(0.5)
+
+    // Count text
+    this.batchCountText = this.add.text(width/2, 70, '0 agents selected', {
+      font: 'bold 14px Fredoka',
+      fill: '#666666'
+    }).setOrigin(0.5)
+
+    // Close button
+    const closeBtn = this.add.graphics()
+    closeBtn.fillStyle(0xFF6B6B, 0.8)
+    closeBtn.fillCircle(width - 18, 18, 14)
+    const closeX = this.add.text(width - 18, 18, 'X', {
+      font: 'bold 14px Fredoka',
+      fill: '#FFFFFF'
+    }).setOrigin(0.5)
+    const closeZone = this.add.zone(width - 18, 18, 28, 28).setInteractive({ useHandCursor: true })
+    closeZone.on('pointerup', () => this.hideBatchPanel())
+
+    this.batchPanel.add([bg, title, this.batchCountText, closeBtn, closeX, closeZone])
+
+    // Batch action buttons
+    const buttons = [
+      { label: 'STOP ALL', action: 'stopAll', color: 0xE74C3C },
+      { label: 'MARK ALL COMPLETE', action: 'completeAll', color: 0x2ECC71 },
+      { label: 'DESELECT ALL', action: 'deselectAll', color: 0x95A5A6 }
+    ]
+
+    let yPos = 95
+    buttons.forEach(btn => {
+      const btnBg = this.add.graphics()
+      this.drawButton(btnBg, 12, yPos, width - 24, 40, btn.color, true)
+      const btnText = this.add.text(width/2, yPos + 20, btn.label, {
+        font: 'bold 14px Fredoka',
+        fill: '#FFFFFF'
+      }).setOrigin(0.5)
+      const btnZone = this.add.zone(width/2, yPos + 20, width - 24, 40).setInteractive({ useHandCursor: true })
+      btnZone.on('pointerup', () => this.executeBatchAction(btn.action))
+      this.batchPanel.add([btnBg, btnText, btnZone])
+      yPos += 50
+    })
+  }
+
+  async executeBatchAction(action) {
+    if (!this.selectedUnits || this.selectedUnits.length === 0) return
+
+    const agentIds = this.selectedUnits.map(u => u.id || `${u.rig}/polecats/${u.unitName}`)
+
+    switch (action) {
+      case 'stopAll':
+        const confirmStop = await this.showModal({
+          title: 'STOP ALL?',
+          message: `Stop ${this.selectedUnits.length} agents?`,
+          showCancel: true
+        })
+        if (!confirmStop) return
+
+        try {
+          await this.api.batchStop(agentIds)
+          this.showNotification('success', 'Batch Stop', `Stopped ${agentIds.length} agents`)
+          if (this.gameScene) this.gameScene.refreshState()
+        } catch (e) {
+          this.showNotification('error', 'Failed', e.message)
+        }
+        break
+
+      case 'completeAll':
+        const confirmComplete = await this.showModal({
+          title: 'COMPLETE ALL?',
+          message: `Mark ${this.selectedUnits.length} agents as complete?`,
+          showCancel: true
+        })
+        if (!confirmComplete) return
+
+        try {
+          await this.api.batchComplete(agentIds)
+          this.showNotification('success', 'Batch Complete', `Completed ${agentIds.length} agents`)
+          if (this.gameScene) this.gameScene.refreshState()
+        } catch (e) {
+          this.showNotification('error', 'Failed', e.message)
+        }
+        break
+
+      case 'deselectAll':
+        if (this.gameScene) {
+          this.gameScene.selectedUnits.forEach(u => u.deselect())
+          this.gameScene.selectedUnits = []
+        }
+        break
+    }
+
+    this.hideBatchPanel()
+  }
+
+  // ===== PROJECT TEMPLATES =====
+
+  async showTemplatesPanel() {
+    const width = this.cameras.main.width
+    const height = this.cameras.main.height
+    const panelWidth = 400
+    const panelHeight = 450
+
+    const picker = this.add.container(width/2, height/2)
+    picker.setDepth(1000)
+
+    const backdrop = this.add.graphics()
+    backdrop.fillStyle(0x000000, 0.6)
+    backdrop.fillRect(-width/2, -height/2, width, height)
+    backdrop.setInteractive(new Phaser.Geom.Rectangle(-width/2, -height/2, width, height), Phaser.Geom.Rectangle.Contains)
+    backdrop.on('pointerup', () => picker.destroy())
+
+    const panel = this.add.graphics()
+    this.drawGlossyPanel(panel, -panelWidth/2, -panelHeight/2, panelWidth, panelHeight, 0x9B59B6, 20)
+    panel.fillStyle(0xFFFFFF, 0.98)
+    panel.fillRoundedRect(-panelWidth/2 + 10, -panelHeight/2 + 60, panelWidth - 20, panelHeight - 80, 12)
+
+    const title = this.add.text(0, -panelHeight/2 + 30, 'PROJECT TEMPLATES', {
+      font: 'bold 20px Fredoka',
+      fill: '#FFFFFF',
+      stroke: '#6C3483',
+      strokeThickness: 2
+    }).setOrigin(0.5)
+
+    picker.add([backdrop, panel, title])
+
+    // Load templates
+    try {
+      const result = await this.api.getTemplates()
+      let yPos = -panelHeight/2 + 80
+
+      if (result.templates.length === 0) {
+        const empty = this.add.text(0, yPos + 50, 'No templates yet\nSave a project as template to get started', {
+          font: '14px Fredoka',
+          fill: '#999999',
+          align: 'center'
+        }).setOrigin(0.5)
+        picker.add(empty)
+      } else {
+        result.templates.forEach(template => {
+          const card = this.createTemplateCard(template, yPos, panelWidth, picker)
+          yPos += 75
+        })
+      }
+
+      // Create template button
+      const createBtn = this.add.graphics()
+      this.drawButton(createBtn, -panelWidth/2 + 20, panelHeight/2 - 60, panelWidth - 40, 40, 0x2ECC71, true)
+      const createText = this.add.text(0, panelHeight/2 - 40, '+ CREATE TEMPLATE', {
+        font: 'bold 14px Fredoka',
+        fill: '#FFFFFF'
+      }).setOrigin(0.5)
+      const createZone = this.add.zone(0, panelHeight/2 - 40, panelWidth - 40, 40).setInteractive({ useHandCursor: true })
+      createZone.on('pointerup', () => {
+        picker.destroy()
+        this.showCreateTemplateDialog()
+      })
+      picker.add([createBtn, createText, createZone])
+
+    } catch (e) {
+      const error = this.add.text(0, 0, `Failed to load templates: ${e.message}`, {
+        font: '14px Fredoka',
+        fill: '#E74C3C'
+      }).setOrigin(0.5)
+      picker.add(error)
+    }
+
+    picker.setScale(0.8)
+    picker.setAlpha(0)
+    this.tweens.add({
+      targets: picker,
+      scale: 1,
+      alpha: 1,
+      duration: 200,
+      ease: 'Back.easeOut'
+    })
+  }
+
+  createTemplateCard(template, y, panelWidth, picker) {
+    const width = panelWidth - 40
+    const container = this.add.container(-panelWidth/2 + 20, y)
+
+    const bg = this.add.graphics()
+    bg.fillStyle(0xF8F8F8, 1)
+    bg.fillRoundedRect(0, 0, width, 65, 10)
+    bg.fillStyle(0x9B59B6, 1)
+    bg.fillRoundedRect(0, 0, 5, 65, { tl: 10, tr: 0, bl: 10, br: 0 })
+
+    const name = this.add.text(15, 10, template.name, {
+      font: 'bold 14px Fredoka',
+      fill: '#333333'
+    })
+
+    const desc = this.add.text(15, 32, template.description || 'No description', {
+      font: '11px Fredoka',
+      fill: '#999999'
+    })
+
+    const stats = this.add.text(15, 48, `${template.defaultAgentCount} agents | ${template.repo ? 'Has repo' : 'No repo'}`, {
+      font: '10px Fredoka',
+      fill: '#666666'
+    })
+
+    // Use button
+    const useBtn = this.add.graphics()
+    this.drawButton(useBtn, width - 70, 15, 60, 35, 0x2ECC71, true)
+    const useText = this.add.text(width - 40, 32, 'USE', {
+      font: 'bold 12px Fredoka',
+      fill: '#FFFFFF'
+    }).setOrigin(0.5)
+    const useZone = this.add.zone(width - 40, 32, 60, 35).setInteractive({ useHandCursor: true })
+    useZone.on('pointerup', () => {
+      picker.destroy()
+      this.showUseTemplateDialog(template)
+    })
+
+    container.add([bg, name, desc, stats, useBtn, useText, useZone])
+    picker.add(container)
+
+    return container
+  }
+
+  async showCreateTemplateDialog() {
+    const name = await this.showModal({
+      title: 'TEMPLATE NAME',
+      message: 'Enter a name for this template',
+      inputType: 'text',
+      placeholder: 'My project template'
+    })
+    if (!name) return
+
+    const description = await this.showModal({
+      title: 'DESCRIPTION',
+      message: 'Add a description (optional)',
+      inputType: 'text',
+      placeholder: 'A template for...'
+    }) || ''
+
+    const agentCount = await this.showModal({
+      title: 'DEFAULT AGENTS',
+      message: 'How many agents to spawn by default?',
+      inputType: 'text',
+      placeholder: '1',
+      defaultValue: '1'
+    })
+
+    try {
+      await this.api.createTemplate({
+        name,
+        description,
+        defaultAgentCount: parseInt(agentCount) || 1
+      })
+      this.showNotification('success', 'Template Created', `Template "${name}" saved`)
+    } catch (e) {
+      this.showNotification('error', 'Failed', e.message)
+    }
+  }
+
+  async showUseTemplateDialog(template) {
+    const projectName = await this.showModal({
+      title: 'PROJECT NAME',
+      message: `Create project from "${template.name}"`,
+      inputType: 'text',
+      placeholder: 'my-new-project'
+    })
+    if (!projectName) return
+
+    try {
+      this.statusText.setText('Creating project...')
+      const result = await this.api.createFromTemplate(template.id, projectName)
+      this.statusText.setText('Project created!')
+
+      if (this.gameScene) {
+        this.gameScene.addBuilding(`rig-${projectName}`, projectName, 14, 8, 'building-rig')
+        this.gameScene.refreshState()
+      }
+
+      this.showNotification('success', 'Project Created', `${projectName} created from template`)
+    } catch (e) {
+      this.statusText.setText('Failed')
+      this.showNotification('error', 'Failed', e.message)
+    }
+  }
+
+  // ===== ENDURANCE EASTER EGG =====
+
+  showEnduranceStory() {
+    const width = this.cameras.main.width
+    const height = this.cameras.main.height
+    const modalWidth = 480
+    const modalHeight = 400
+
+    // Modal container
+    this.enduranceModal = this.add.container(width/2, height/2)
+    this.enduranceModal.setDepth(1000)
+    this.enduranceModal.setAlpha(0)
+    this.enduranceModal.setScale(0.8)
+
+    // Backdrop
+    const backdrop = this.add.graphics()
+    backdrop.fillStyle(0x000000, 0.7)
+    backdrop.fillRect(-width/2, -height/2, width, height)
+    backdrop.setInteractive(new Phaser.Geom.Rectangle(-width/2, -height/2, width, height), Phaser.Geom.Rectangle.Contains)
+
+    // Modal card with icy theme
+    const card = this.add.graphics()
+    // Outer ice glow
+    card.fillStyle(0x87CEEB, 0.4)
+    card.fillRoundedRect(-modalWidth/2 - 8, -modalHeight/2 - 8, modalWidth + 16, modalHeight + 16, 24)
+    // Shadow
+    card.fillStyle(0x1A3A4A, 0.5)
+    card.fillRoundedRect(-modalWidth/2 + 8, -modalHeight/2 + 8, modalWidth, modalHeight, 22)
+    // Main card (parchment/old paper look)
+    card.fillStyle(0xF5E6D3, 0.98)
+    card.fillRoundedRect(-modalWidth/2, -modalHeight/2, modalWidth, modalHeight, 22)
+    // Header (dark Antarctic blue)
+    card.fillStyle(0x1A3A4A, 1)
+    card.fillRoundedRect(-modalWidth/2, -modalHeight/2, modalWidth, 65, { tl: 22, tr: 22, bl: 0, br: 0 })
+    // Border
+    card.lineStyle(3, 0x4A6A7A, 1)
+    card.strokeRoundedRect(-modalWidth/2, -modalHeight/2, modalWidth, modalHeight, 22)
+
+    // Ship icon in header
+    const shipIcon = this.add.text(-modalWidth/2 + 30, -modalHeight/2 + 32, '🚢', {
+      font: '28px Fredoka'
+    }).setOrigin(0.5)
+
+    // Title
+    const titleText = this.add.text(20, -modalHeight/2 + 32, 'THE ENDURANCE', {
+      font: 'bold 24px Fredoka',
+      fill: '#FFFFFF',
+      stroke: '#0A1A2A',
+      strokeThickness: 2
+    }).setOrigin(0.5)
+
+    // Subtitle
+    const subtitleText = this.add.text(0, -modalHeight/2 + 80, "Shackleton's Legendary Antarctic Expedition", {
+      font: 'italic 14px Fredoka',
+      fill: '#4A3A2A'
+    }).setOrigin(0.5)
+
+    // Story text
+    const storyText = `In 1914, Sir Ernest Shackleton and his crew of 27 men set sail for Antarctica aboard the Endurance, hoping to make the first land crossing of the Antarctic continent.
+
+Their ship became trapped in pack ice in the Weddell Sea and was slowly crushed over months. The crew camped on ice floes, then made a desperate 800-mile journey in small lifeboats to reach Elephant Island.
+
+Shackleton and five others then sailed 800 miles across the world's most treacherous ocean in a 22-foot boat to South Georgia, where they crossed unmapped mountains to reach help.
+
+Incredibly, not a single life was lost.
+
+This is one of history's greatest survival stories.`
+
+    const story = this.add.text(0, -modalHeight/2 + 105, storyText, {
+      font: '13px Fredoka',
+      fill: '#3A2A1A',
+      align: 'center',
+      wordWrap: { width: modalWidth - 50 },
+      lineSpacing: 4
+    }).setOrigin(0.5, 0)
+
+    // Book recommendation
+    const bookText = this.add.text(0, modalHeight/2 - 95, '📖 Read the incredible full story:', {
+      font: 'bold 12px Fredoka',
+      fill: '#4A3A2A'
+    }).setOrigin(0.5)
+
+    // Amazon link button
+    const linkBtn = this.add.graphics()
+    linkBtn.fillStyle(0xFF9900, 1) // Amazon orange
+    linkBtn.fillRoundedRect(-100, modalHeight/2 - 75, 200, 36, 8)
+    linkBtn.fillStyle(0xFFAA33, 0.4)
+    linkBtn.fillRoundedRect(-98, modalHeight/2 - 73, 196, 16, { tl: 6, tr: 6, bl: 0, br: 0 })
+
+    const linkText = this.add.text(0, modalHeight/2 - 57, 'ENDURANCE by Alfred Lansing', {
+      font: 'bold 12px Fredoka',
+      fill: '#FFFFFF'
+    }).setOrigin(0.5)
+
+    const linkZone = this.add.zone(0, modalHeight/2 - 57, 200, 36).setInteractive({ useHandCursor: true })
+    linkZone.on('pointerup', () => {
+      window.open('https://www.amazon.com/Endurance-Shackletons-Incredible-Alfred-Lansing/dp/0465062881/', '_blank')
+    })
+    linkZone.on('pointerover', () => {
+      linkBtn.clear()
+      linkBtn.fillStyle(0xFFAA33, 1)
+      linkBtn.fillRoundedRect(-100, modalHeight/2 - 75, 200, 36, 8)
+    })
+    linkZone.on('pointerout', () => {
+      linkBtn.clear()
+      linkBtn.fillStyle(0xFF9900, 1)
+      linkBtn.fillRoundedRect(-100, modalHeight/2 - 75, 200, 36, 8)
+      linkBtn.fillStyle(0xFFAA33, 0.4)
+      linkBtn.fillRoundedRect(-98, modalHeight/2 - 73, 196, 16, { tl: 6, tr: 6, bl: 0, br: 0 })
+    })
+
+    // Close button
+    const closeBtn = this.add.graphics()
+    closeBtn.fillStyle(0xE74C3C, 1)
+    closeBtn.fillCircle(modalWidth/2 - 25, -modalHeight/2 + 25, 16)
+    closeBtn.fillStyle(0xFF6B6B, 0.5)
+    closeBtn.fillCircle(modalWidth/2 - 27, -modalHeight/2 + 23, 8)
+
+    const closeX = this.add.text(modalWidth/2 - 25, -modalHeight/2 + 25, '×', {
+      font: 'bold 22px Fredoka',
+      fill: '#FFFFFF'
+    }).setOrigin(0.5)
+
+    const closeZone = this.add.zone(modalWidth/2 - 25, -modalHeight/2 + 25, 32, 32).setInteractive({ useHandCursor: true })
+    closeZone.on('pointerup', () => {
+      this.tweens.add({
+        targets: this.enduranceModal,
+        alpha: 0,
+        scale: 0.8,
+        duration: 200,
+        ease: 'Back.easeIn',
+        onComplete: () => {
+          this.enduranceModal.destroy()
+          this.enduranceModal = null
+        }
+      })
+    })
+
+    // Click backdrop to close
+    backdrop.on('pointerup', () => {
+      closeZone.emit('pointerup')
+    })
+
+    this.enduranceModal.add([
+      backdrop, card, shipIcon, titleText, subtitleText, story,
+      bookText, linkBtn, linkText, linkZone,
+      closeBtn, closeX, closeZone
+    ])
+
+    // Animate in
+    this.tweens.add({
+      targets: this.enduranceModal,
+      alpha: 1,
+      scale: 1,
+      duration: 300,
+      ease: 'Back.easeOut'
+    })
   }
 
 }

@@ -34,6 +34,9 @@ export class GameScene extends Phaser.Scene {
     // Create isometric map
     this.createMap()
 
+    // Add hidden Easter egg - Endurance shipwreck
+    this.createEnduranceWreck()
+
     // Add enhanced snow particle effect
     this.createSnowParticles()
 
@@ -397,6 +400,63 @@ export class GameScene extends Phaser.Scene {
     // Offset to center
     this.mapLayer.x = this.cameras.main.width / 2
     this.mapLayer.y = 150
+  }
+
+  createEnduranceWreck() {
+    // Position the wreck slightly off the starting view to the lower-left
+    // Camera starts at center of map (2560, 1280), viewport is 1280x720
+    // Place wreck about 700px left of center and 200px down - just off screen but easy to find
+    const worldX = 2560 - 700
+    const worldY = 1280 + 200
+
+    this.enduranceWreck = this.add.image(worldX, worldY, 'endurance-wreck')
+    this.enduranceWreck.setScale(1.5)  // Larger for easier clicking
+    this.enduranceWreck.setAlpha(0.9)
+    this.enduranceWreck.setDepth(50)
+    // Store base Y for animation
+    this.enduranceWreckBaseY = worldY
+    // Large hit area for easier clicking - about 150x100 pixels centered on the wreck
+    this.enduranceWreck.setInteractive({
+      useHandCursor: true,
+      hitArea: new Phaser.Geom.Rectangle(-50, -35, 180, 130),
+      hitAreaCallback: Phaser.Geom.Rectangle.Contains
+    })
+
+    // Subtle bobbing animation (frozen in ice, slight movement)
+    this.tweens.add({
+      targets: this.enduranceWreck,
+      y: this.enduranceWreckBaseY + 2,
+      duration: 3000,
+      yoyo: true,
+      repeat: -1,
+      ease: 'Sine.easeInOut'
+    })
+
+    // Click to show Shackleton story (use pointerdown like buildings)
+    this.enduranceWreck.on('pointerdown', () => {
+      this.clickedOnObject = true
+      // Emit event immediately
+      this.events.emit('enduranceClicked')
+      // Click feedback animation
+      this.tweens.add({
+        targets: this.enduranceWreck,
+        scaleX: 1.35,
+        scaleY: 1.35,
+        duration: 100,
+        yoyo: true
+      })
+    })
+
+    // Hover effect
+    this.enduranceWreck.on('pointerover', () => {
+      this.enduranceWreck.setAlpha(1)
+      this.enduranceWreck.setScale(1.1)
+    })
+
+    this.enduranceWreck.on('pointerout', () => {
+      this.enduranceWreck.setAlpha(0.85)
+      this.enduranceWreck.setScale(1.0)
+    })
   }
 
   setupInput() {

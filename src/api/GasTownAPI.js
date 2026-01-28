@@ -128,4 +128,169 @@ export class GasTownAPI {
       method: 'POST'
     })
   }
+
+  // ===== ACTIVITY FEED =====
+
+  // Get activity feed
+  async getActivityFeed(options = {}) {
+    const params = new URLSearchParams()
+    if (options.limit) params.append('limit', options.limit)
+    if (options.offset) params.append('offset', options.offset)
+    if (options.type) params.append('type', options.type)
+    if (options.project) params.append('project', options.project)
+    if (options.agent) params.append('agent', options.agent)
+    return this.request(`/activity?${params.toString()}`)
+  }
+
+  // ===== TASK QUEUE =====
+
+  // Get task queue
+  async getTaskQueue(project = null) {
+    const params = project ? `?project=${encodeURIComponent(project)}` : ''
+    return this.request(`/taskqueue${params}`)
+  }
+
+  // Add task to queue
+  async addTask(task) {
+    return this.request('/taskqueue', {
+      method: 'POST',
+      body: JSON.stringify(task)
+    })
+  }
+
+  // Update task in queue
+  async updateTask(taskId, updates) {
+    return this.request(`/taskqueue/${encodeURIComponent(taskId)}`, {
+      method: 'PUT',
+      body: JSON.stringify(updates)
+    })
+  }
+
+  // Remove task from queue
+  async removeTask(taskId) {
+    return this.request(`/taskqueue/${encodeURIComponent(taskId)}`, {
+      method: 'DELETE'
+    })
+  }
+
+  // Assign task from queue to agent
+  async assignTask(taskId, agent, rig = null) {
+    return this.request(`/taskqueue/${encodeURIComponent(taskId)}/assign`, {
+      method: 'POST',
+      body: JSON.stringify({ agent, rig })
+    })
+  }
+
+  // ===== COST DASHBOARD =====
+
+  // Get cost dashboard data
+  async getCostDashboard() {
+    return this.request('/costs/dashboard')
+  }
+
+  // Record token usage
+  async recordCost(agent, project, tokens) {
+    return this.request('/costs/record', {
+      method: 'POST',
+      body: JSON.stringify({ agent, project, tokens })
+    })
+  }
+
+  // Export cost CSV
+  getCostExportUrl(from, to) {
+    const params = new URLSearchParams()
+    if (from) params.append('from', from)
+    if (to) params.append('to', to)
+    return `${this.baseUrl}/costs/export?${params.toString()}`
+  }
+
+  // ===== GITHUB INTEGRATION =====
+
+  // Get tracked PRs
+  async getGitHubPRs(options = {}) {
+    const params = new URLSearchParams()
+    if (options.project) params.append('project', options.project)
+    if (options.agent) params.append('agent', options.agent)
+    if (options.status) params.append('status', options.status)
+    return this.request(`/github/prs?${params.toString()}`)
+  }
+
+  // Track a new PR
+  async trackPR(prData) {
+    return this.request('/github/prs', {
+      method: 'POST',
+      body: JSON.stringify(prData)
+    })
+  }
+
+  // Update PR status
+  async updatePR(prId, updates) {
+    return this.request(`/github/prs/${encodeURIComponent(prId)}`, {
+      method: 'PUT',
+      body: JSON.stringify(updates)
+    })
+  }
+
+  // Remove PR tracking
+  async removePR(prId) {
+    return this.request(`/github/prs/${encodeURIComponent(prId)}`, {
+      method: 'DELETE'
+    })
+  }
+
+  // ===== BATCH OPERATIONS =====
+
+  // Stop multiple agents
+  async batchStop(agents) {
+    return this.request('/batch/stop', {
+      method: 'POST',
+      body: JSON.stringify({ agents })
+    })
+  }
+
+  // Mark multiple agents as complete
+  async batchComplete(agents) {
+    return this.request('/batch/complete', {
+      method: 'POST',
+      body: JSON.stringify({ agents })
+    })
+  }
+
+  // Spawn multiple agents
+  async batchSpawn(rig, count, prefix = 'polecat') {
+    return this.request('/batch/spawn', {
+      method: 'POST',
+      body: JSON.stringify({ rig, count, prefix })
+    })
+  }
+
+  // ===== PROJECT TEMPLATES =====
+
+  // Get all templates
+  async getTemplates() {
+    return this.request('/templates')
+  }
+
+  // Create template from existing rig
+  async createTemplate(templateData) {
+    return this.request('/templates', {
+      method: 'POST',
+      body: JSON.stringify(templateData)
+    })
+  }
+
+  // Create project from template
+  async createFromTemplate(templateId, projectName) {
+    return this.request(`/templates/${encodeURIComponent(templateId)}/create`, {
+      method: 'POST',
+      body: JSON.stringify({ projectName })
+    })
+  }
+
+  // Delete template
+  async deleteTemplate(templateId) {
+    return this.request(`/templates/${encodeURIComponent(templateId)}`, {
+      method: 'DELETE'
+    })
+  }
 }

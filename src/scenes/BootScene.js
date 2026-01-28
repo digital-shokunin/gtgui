@@ -74,6 +74,9 @@ export class BootScene extends Phaser.Scene {
 
     // Sea lion for stuck animation
     this.generateSeaLion()
+
+    // Hidden Easter egg - Endurance shipwreck
+    this.generateEnduranceWreck()
   }
 
   generateMultiplayerSprites() {
@@ -1101,6 +1104,104 @@ export class BootScene extends Phaser.Scene {
     g.strokePath()
 
     g.generateTexture('sea-lion', width, height)
+    g.destroy()
+  }
+
+  generateEnduranceWreck() {
+    const g = this.make.graphics({ x: 0, y: 0, add: false })
+    const width = 80
+    const height = 60
+
+    // Ice/water around the wreck
+    g.fillStyle(0x87CEEB, 0.3)
+    g.fillEllipse(width/2, height - 8, 70, 16)
+
+    // Broken hull - tilted and partially submerged
+    g.fillStyle(0x4A3728, 1)
+    // Main hull section (tilted)
+    g.beginPath()
+    g.moveTo(10, height - 20)
+    g.lineTo(20, height - 35)
+    g.lineTo(55, height - 40)
+    g.lineTo(70, height - 25)
+    g.lineTo(65, height - 12)
+    g.lineTo(15, height - 10)
+    g.closePath()
+    g.fillPath()
+
+    // Hull planks/texture
+    g.lineStyle(1, 0x3A2718, 0.6)
+    g.lineBetween(18, height - 32, 60, height - 36)
+    g.lineBetween(16, height - 26, 62, height - 30)
+    g.lineBetween(15, height - 18, 64, height - 20)
+
+    // Broken mast (tilted, snapped)
+    g.fillStyle(0x5D4E37, 1)
+    g.beginPath()
+    g.moveTo(35, height - 38)
+    g.lineTo(38, height - 38)
+    g.lineTo(45, 8)
+    g.lineTo(42, 6)
+    g.closePath()
+    g.fillPath()
+
+    // Broken top of mast
+    g.fillStyle(0x4A3F2F, 1)
+    g.beginPath()
+    g.moveTo(42, 8)
+    g.lineTo(55, 4)
+    g.lineTo(56, 7)
+    g.lineTo(44, 10)
+    g.closePath()
+    g.fillPath()
+
+    // Tattered sail/rigging remnants
+    g.fillStyle(0xD4C4A8, 0.7)
+    g.beginPath()
+    g.moveTo(43, 12)
+    g.lineTo(52, 18)
+    g.lineTo(48, 28)
+    g.lineTo(40, 22)
+    g.closePath()
+    g.fillPath()
+
+    // Rigging lines (broken)
+    g.lineStyle(1, 0x8B7355, 0.5)
+    g.lineBetween(44, 15, 30, height - 30)
+    g.lineBetween(46, 20, 55, height - 32)
+
+    // Ice crushing into hull
+    g.fillStyle(0xE8F4FC, 0.8)
+    g.fillEllipse(12, height - 14, 10, 8)
+    g.fillEllipse(68, height - 16, 12, 10)
+
+    // Ice chunks
+    g.fillStyle(0xFFFFFF, 0.9)
+    g.beginPath()
+    g.moveTo(5, height - 10)
+    g.lineTo(8, height - 18)
+    g.lineTo(16, height - 12)
+    g.lineTo(12, height - 6)
+    g.closePath()
+    g.fillPath()
+
+    g.beginPath()
+    g.moveTo(65, height - 8)
+    g.lineTo(72, height - 20)
+    g.lineTo(78, height - 14)
+    g.lineTo(75, height - 4)
+    g.closePath()
+    g.fillPath()
+
+    // Snow accumulation on deck
+    g.fillStyle(0xFFFFFF, 0.7)
+    g.fillEllipse(40, height - 32, 20, 4)
+
+    // Crow's nest remnant at top
+    g.fillStyle(0x3A2718, 1)
+    g.fillRect(41, 4, 6, 4)
+
+    g.generateTexture('endurance-wreck', width, height)
     g.destroy()
   }
 }
