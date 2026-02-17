@@ -84,6 +84,17 @@ export class GasTownAPI {
     return this.request(`/agents/${encodeURIComponent(agentId)}/hook`)
   }
 
+  // Get agent session logs (captured terminal output)
+  async getAgentLogs(agentId, lines = 100) {
+    return this.request(`/agents/${encodeURIComponent(agentId)}/logs?lines=${lines}`)
+  }
+
+  // Open SSE stream for live log tailing — returns EventSource
+  openLogStream(agentId) {
+    const encoded = encodeURIComponent(agentId)
+    return new EventSource(`${this.baseUrl}/agents/${encoded}/logs/stream`)
+  }
+
   // Emergency stop
   async stop(agentId) {
     return this.request(`/agents/${encodeURIComponent(agentId)}/stop`, { method: 'POST' })

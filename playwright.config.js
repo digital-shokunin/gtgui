@@ -12,7 +12,7 @@ export default defineConfig({
   workers: 1,
   reporter: 'list',
   use: {
-    baseURL: 'http://localhost:8080',
+    baseURL: process.env.BASE_URL || 'http://localhost:8080',
     trace: 'on-first-retry',
     screenshot: 'only-on-failure',
   },
@@ -25,10 +25,13 @@ export default defineConfig({
       },
     },
   ],
-  webServer: {
-    command: 'node server.js',
-    url: 'http://localhost:8080',
-    reuseExistingServer: true,
-    timeout: 10000,
-  },
+  // Skip local webServer when BASE_URL is set (e.g., in Docker compose)
+  ...(process.env.BASE_URL ? {} : {
+    webServer: {
+      command: 'node server.js',
+      url: 'http://localhost:8080',
+      reuseExistingServer: true,
+      timeout: 10000,
+    },
+  }),
 })

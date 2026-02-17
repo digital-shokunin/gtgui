@@ -1,0 +1,29 @@
+services:
+  gtgui:
+    build: .
+    ports:
+      - "8080:8080"
+    environment:
+      - NODE_ENV=development
+      - GT_PATH=/usr/local/bin/gt
+      - TOWN_ROOT=/root/gt
+      - PORT=8080
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/api/status"]
+      interval: 3s
+      timeout: 5s
+      retries: 10
+
+  test:
+    build: .
+    depends_on:
+      gtgui:
+        condition: service_healthy
+    environment:
+      - NODE_ENV=development
+      - GT_PATH=/usr/local/bin/gt
+      - TOWN_ROOT=/root/gt
+      - BASE_URL=http://gtgui:8080
+    command: npx playwright test --reporter=list
+    volumes:
+      - ./test-results:/app/test-results

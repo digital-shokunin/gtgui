@@ -258,14 +258,18 @@ function checkForStuckAgents() {
           const elapsed = now - assignedAt
           const tokensUsed = status.tokensUsed || 0
 
-          // Check if either threshold exceeded
+          // Check if session is actually alive
+          const sessionAlive = isSessionAlive(rig.name, name)
+
+          // Check if either threshold exceeded, or session died
           const timeExceeded = elapsed > currentSettings.stuckTimeThreshold
           const tokensExceeded = tokensUsed > currentSettings.stuckTokenThreshold
+          const sessionDead = !sessionAlive && elapsed > 10000  // Give 10s grace period for startup
 
-          if (timeExceeded || tokensExceeded) {
+          if (timeExceeded || tokensExceeded || sessionDead) {
             // Mark as stuck
             status.status = 'stuck'
-            status.stuckReason = timeExceeded ? 'time' : 'tokens'
+            status.stuckReason = sessionDead ? 'session_dead' : (timeExceeded ? 'time' : 'tokens')
             status.stuckAt = new Date().toISOString()
             writeFileSync(statusFile, JSON.stringify(status, null, 2))
 
@@ -276,9 +280,11 @@ function checkForStuckAgents() {
               reason: status.stuckReason,
               elapsed,
               tokensUsed,
-              message: timeExceeded
-                ? `${name} has been working for over ${Math.round(elapsed / 60000)} minutes`
-                : `${name} has used over ${tokensUsed.toLocaleString()} tokens`
+              message: sessionDead
+                ? `${name} session died (no tmux session found)`
+                : timeExceeded
+                  ? `${name} has been working for over ${Math.round(elapsed / 60000)} minutes`
+                  : `${name} has used over ${tokensUsed.toLocaleString()} tokens`
             })
 
             // Add to activity feed
@@ -346,6 +352,52 @@ function gt(args, cwd = TOWN_ROOT) {
   }
 }
 
+// Parse agent ID string into { rigName, polecatName } — searches all rigs if needed
+function parseAgentId(agentId) {
+  const parts = agentId.split('/')
+  let rigName, polecatName
+  if (parts.length >= 3) {
+    rigName = parts[0]
+    polecatName = parts[parts.length - 1]
+  } else {
+    polecatName = agentId
+    // Search all rigs for this polecat
+    const rigs = listRigs()
+    for (const rig of rigs) {
+      const statusPath = join(TOWN_ROOT, rig.name, 'polecats', polecatName, 'status.json')
+      if (existsSync(statusPath)) {
+        rigName = rig.name
+        break
+      }
+    }
+  }
+  return { rigName, polecatName }
+}
+
+// Check if a tmux session is alive for a given rig/polecat
+function isSessionAlive(rigName, polecatName) {
+  try {
+    const result = gt(`session status ${rigName}/${polecatName} --json`)
+    if (result) {
+      const parsed = JSON.parse(result)
+      return parsed.running === true || parsed.alive === true
+    }
+  } catch {
+    // Fallback: check tmux directly
+    try {
+      execSync(`tmux has-session -t "${polecatName}" 2>/dev/null`, {
+        encoding: 'utf-8',
+        timeout: 5000,
+        shell: true
+      })
+      return true
+    } catch {
+      return false
+    }
+  }
+  return false
+}
+
 // Parse JSON output from gt commands
 function gtJson(args, cwd = TOWN_ROOT) {
   const result = gt(`${args} --json`, cwd)
@@ -387,6 +439,14 @@ function listRigs() {
     return []
   }
 }
+
+// GET /api/config - Client configuration (production flag, etc.)
+app.get('/api/config', (req, res) => {
+  res.json({
+    production: process.env.NODE_ENV === 'production',
+    version: '1.0.0'
+  })
+})
 
 // GET /api/status - Overall town status
 app.get('/api/status', (req, res) => {
@@ -616,7 +676,7 @@ app.get('/api/convoys/:id', (req, res) => {
   }
 })
 
-// POST /api/sling - Sling work to agent
+// POST /api/sling - Sling work to agent (calls real gt sling to start Claude session)
 app.post('/api/sling', (req, res) => {
   const { agent, issue } = req.body
   if (!agent || !issue) {
@@ -634,42 +694,55 @@ app.post('/api/sling', (req, res) => {
     rigName = 'default'
   }
 
-  // Update polecat status to working
+  // Write status immediately so UI reflects the change
   const statusPath = join(TOWN_ROOT, rigName, 'polecats', polecatName, 'status.json')
-  try {
-    const status = {
-      status: 'working',
-      issue: issue,
-      assignedAt: new Date().toISOString(),
-      progress: 0
-    }
-    // Use Node.js fs to avoid shell escaping issues with special characters
-    const statusDir = dirname(statusPath)
-    if (!existsSync(statusDir)) {
-      mkdirSync(statusDir, { recursive: true })
-    }
-    writeFileSync(statusPath, JSON.stringify(status, null, 2))
-
-    // Broadcast status update
-    multiplayer.broadcastStateUpdate({
-      event: 'polecat:working',
-      rig: rigName,
-      polecat: polecatName,
-      issue: issue
-    })
-
-    // Add to activity feed
-    addActivityEvent('task_assigned', {
-      task: issue,
-      agent: polecatName,
-      rig: rigName
-    }, req.session?.passport?.user)
-
-    res.json({ success: true, message: `Assigned ${issue} to ${polecatName}`, status })
-  } catch (e) {
-    console.error('Sling failed:', e.message)
-    res.status(500).json({ error: 'Sling failed: ' + e.message })
+  const statusDir = dirname(statusPath)
+  if (!existsSync(statusDir)) {
+    mkdirSync(statusDir, { recursive: true })
   }
+
+  const status = {
+    status: 'working',
+    issue: issue,
+    assignedAt: new Date().toISOString(),
+    progress: 0
+  }
+  writeFileSync(statusPath, JSON.stringify(status, null, 2))
+
+  // Call real gt sling to dispatch work and start a Claude session
+  // gt sling handles: session start, convoy creation, Claude invocation, task injection
+  // Escape the issue text for shell safety
+  const escapedIssue = issue.replace(/"/g, '\\"').replace(/\$/g, '\\$')
+  const slingResult = gt(`sling "${escapedIssue}" ${rigName}`)
+
+  if (slingResult === null) {
+    // gt sling failed — try starting a session directly as fallback
+    console.warn(`gt sling failed for ${rigName}, attempting gt session start as fallback`)
+    const sessionResult = gt(`session start ${rigName}/${polecatName}`)
+    if (sessionResult === null) {
+      console.error(`Both gt sling and gt session start failed for ${rigName}/${polecatName}`)
+      // Status is already written, so UI shows "working" — mark the issue
+      status.slingError = 'gt sling and session start both failed'
+      writeFileSync(statusPath, JSON.stringify(status, null, 2))
+    }
+  }
+
+  // Broadcast status update
+  multiplayer.broadcastStateUpdate({
+    event: 'polecat:working',
+    rig: rigName,
+    polecat: polecatName,
+    issue: issue
+  })
+
+  // Add to activity feed
+  addActivityEvent('task_assigned', {
+    task: issue,
+    agent: polecatName,
+    rig: rigName
+  }, req.session?.passport?.user)
+
+  res.json({ success: true, message: `Assigned ${issue} to ${polecatName}`, status })
 })
 
 // POST /api/mail/send - Send mail
@@ -747,6 +820,77 @@ app.get('/api/agents/:id/hook', (req, res) => {
   } else {
     res.json({ hook: null, status: 'idle' })
   }
+})
+
+// GET /api/agents/:id/logs - Get captured session output
+app.get('/api/agents/:id/logs', (req, res) => {
+  const { rigName, polecatName } = parseAgentId(req.params.id)
+  const lines = parseInt(req.query.lines) || 100
+
+  if (!rigName) {
+    return res.status(404).json({ error: 'Agent not found', logs: '', sessionActive: false })
+  }
+
+  // Capture session output via gt session capture
+  const captured = gt(`session capture ${rigName}/${polecatName} -n ${lines}`)
+  const sessionActive = isSessionAlive(rigName, polecatName)
+
+  // Also read status for context
+  let status = {}
+  const statusPath = join(TOWN_ROOT, rigName, 'polecats', polecatName, 'status.json')
+  if (existsSync(statusPath)) {
+    try {
+      status = JSON.parse(readFileSync(statusPath, 'utf-8'))
+    } catch { /* ignore */ }
+  }
+
+  res.json({
+    logs: captured || '(No session output available)',
+    sessionActive,
+    status: status.status || 'unknown',
+    task: status.issue || status.task || null,
+    tokensUsed: status.tokensUsed || 0,
+    rig: rigName,
+    polecat: polecatName
+  })
+})
+
+// GET /api/agents/:id/logs/stream - SSE stream of live session output
+app.get('/api/agents/:id/logs/stream', (req, res) => {
+  const { rigName, polecatName } = parseAgentId(req.params.id)
+
+  if (!rigName) {
+    res.status(404).json({ error: 'Agent not found' })
+    return
+  }
+
+  res.setHeader('Content-Type', 'text/event-stream')
+  res.setHeader('Cache-Control', 'no-cache')
+  res.setHeader('Connection', 'keep-alive')
+
+  let lastLength = 0
+
+  const interval = setInterval(() => {
+    try {
+      const captured = gt(`session capture ${rigName}/${polecatName} -n 200`)
+      if (captured && captured.length !== lastLength) {
+        lastLength = captured.length
+        res.write(`data: ${JSON.stringify({ logs: captured, sessionActive: true })}\n\n`)
+      } else if (!captured || captured.trim() === '') {
+        // Check if session is still alive
+        const alive = isSessionAlive(rigName, polecatName)
+        if (!alive) {
+          res.write(`data: ${JSON.stringify({ logs: '(Session ended)', sessionActive: false })}\n\n`)
+        }
+      }
+    } catch (e) {
+      res.write(`data: ${JSON.stringify({ error: e.message, sessionActive: false })}\n\n`)
+    }
+  }, 2000)
+
+  req.on('close', () => {
+    clearInterval(interval)
+  })
 })
 
 // POST /api/agents/:id/simulate-stuck - Simulate agent getting stuck (for testing)

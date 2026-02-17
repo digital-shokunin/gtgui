@@ -164,21 +164,37 @@
         Sign in with GitHub
       </a>
 
-      <div class="login-divider">or dev mode</div>
+      <div id="dev-login-section">
+        <div class="login-divider">or dev mode</div>
 
-      <div class="dev-login">
-        <input type="text" id="dev-username" placeholder="Enter username" />
-        <button onclick="devLogin()">Join</button>
+        <div class="dev-login">
+          <input type="text" id="dev-username" placeholder="Enter username" />
+          <button onclick="devLogin()">Join</button>
+        </div>
+        <p class="dev-note">Dev mode - no GitHub required</p>
       </div>
-      <p class="dev-note">Dev mode - no GitHub required</p>
     </div>
   </div>
 
   <div id="game-container"></div>
 
   <script>
-    // Check if already logged in
+    // Check if already logged in, and hide dev login in production
     async function checkAuth() {
+      try {
+        // Check config to hide dev login in production
+        const configRes = await fetch('/api/config')
+        if (configRes.ok) {
+          const config = await configRes.json()
+          if (config.production) {
+            const devSection = document.getElementById('dev-login-section')
+            if (devSection) devSection.style.display = 'none'
+          }
+        }
+      } catch (e) {
+        // Config fetch failed, leave dev login visible as fallback
+      }
+
       try {
         const res = await fetch('/api/me', { credentials: 'include' })
         if (res.ok) {

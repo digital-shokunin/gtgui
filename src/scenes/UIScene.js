@@ -367,7 +367,7 @@ export class UIScene extends Phaser.Scene {
     const panelHeight = 500
 
     this.settingsPanel = this.add.container(width/2, height/2)
-    this.settingsPanel.setDepth(1000)
+    this.settingsPanel.setDepth(1500)
 
     // Backdrop
     const backdrop = this.add.graphics()
@@ -637,16 +637,19 @@ export class UIScene extends Phaser.Scene {
     this.drawGlossyPanel(this.topBar, 10, 8, width - 20, 50, 0x0077B6, 14)
 
     // Resource displays (Club Penguin style - coins, fish, stamps)
-    // Now using 32px icons
+    // Right-aligned dynamically based on screen width
+    // Spacing: 155px between each, rightmost at width - 30
+    const rightBase = width - 30
     this.resources = {
-      tokens: { icon: 'icon-tokens', value: 0, x: 45, label: 'Coins', displayValue: 0 },
-      issues: { icon: 'icon-issues', value: 0, x: 200, label: 'Fish', displayValue: 0 },
-      convoys: { icon: 'icon-convoys', value: 0, x: 355, label: 'Stamps', displayValue: 0 }
+      tokens: { icon: 'icon-tokens', value: 0, x: rightBase - 310, label: 'Coins', displayValue: 0 },
+      issues: { icon: 'icon-issues', value: 0, x: rightBase - 155, label: 'Fish', displayValue: 0 },
+      convoys: { icon: 'icon-convoys', value: 0, x: rightBase - 0, label: 'Stamps', displayValue: 0 }
     }
 
     Object.entries(this.resources).forEach(([key, res]) => {
       // Icon with glow container
       const iconContainer = this.add.container(res.x, 33)
+      res._iconContainer = iconContainer  // Store ref for resize
 
       // Icon glow
       const glow = this.add.graphics()
@@ -666,6 +669,7 @@ export class UIScene extends Phaser.Scene {
 
       // Hover effect on icon
       const hitZone = this.add.zone(res.x, 33, 50, 40).setInteractive()
+      res._hitZone = hitZone  // Store ref for resize
       hitZone.on('pointerover', () => {
         this.tweens.add({
           targets: res.iconSprite,
@@ -748,11 +752,11 @@ export class UIScene extends Phaser.Scene {
 
     this.miniStatusText.setText(text)
 
-    // Highlight if any stuck
+    // Highlight if any stuck — use bright yellow with stroke for contrast on blue header
     if (stuck > 0) {
-      this.miniStatusText.setStyle({ fill: '#E74C3C' })
+      this.miniStatusText.setStyle({ fill: '#FFD700', stroke: '#CC0000', strokeThickness: 2 })
     } else {
-      this.miniStatusText.setStyle({ fill: '#B0E0E6' })
+      this.miniStatusText.setStyle({ fill: '#B0E0E6', stroke: '#005588', strokeThickness: 0 })
     }
   }
 
@@ -790,8 +794,8 @@ export class UIScene extends Phaser.Scene {
   createUsersIndicator() {
     const width = this.cameras.main.width
 
-    // Users container (positioned in middle-right of top bar)
-    this.usersContainer = this.add.container(width - 220, 33)
+    // Users container (positioned to the left of the title, vertically centered in header)
+    this.usersContainer = this.add.container(width - 320, 22)
 
     // "Online:" label
     this.usersLabel = this.add.text(0, 0, 'Online:', {
@@ -1118,43 +1122,23 @@ export class UIScene extends Phaser.Scene {
     // Selection card - Club Penguin player card style with frosted glass effect
     // Initially hidden, shown when something is selected
     // Centered on screen
-    const cardWidth = 220
-    const cardHeight = 300
-    const centerX = (this.cameras.main.width - cardWidth) / 2
-    const centerY = (this.cameras.main.height - cardHeight) / 2
+    this._cardWidth = 220
+    this._currentCardHeight = 300
+    const centerX = (this.cameras.main.width - this._cardWidth) / 2
+    const centerY = (this.cameras.main.height - this._currentCardHeight) / 2
     this.selectionCard = this.add.container(centerX, centerY)
     this.selectionCard.setVisible(false)
     this.selectionCard.setAlpha(0)
     this.selectionCard.setDepth(800)
 
-    // Card background with frosted glass effect
-    const cardBg = this.add.graphics()
+    // Card background with frosted glass effect (stored for dynamic redraw)
+    this._cardBg = this.add.graphics()
+    const cardBg = this._cardBg
+    const cardWidth = this._cardWidth
+    const cardHeight = this._currentCardHeight
 
-    // Outer glow
-    cardBg.fillStyle(0x87CEEB, 0.3)
-    cardBg.fillRoundedRect(-5, -5, cardWidth + 10, cardHeight + 10, 24)
-
-    // Shadow
-    cardBg.fillStyle(0x000000, 0.25)
-    cardBg.fillRoundedRect(5, 5, cardWidth, cardHeight, 22)
-
-    // Main card - frosted white
-    cardBg.fillStyle(0xFFFFFF, 0.95)
-    cardBg.fillRoundedRect(0, 0, cardWidth, cardHeight, 22)
-
-    // Blue header gradient
-    cardBg.fillStyle(0x005588, 1)
-    cardBg.fillRoundedRect(0, 0, cardWidth, 70, { tl: 22, tr: 22, bl: 0, br: 0 })
-    cardBg.fillStyle(0x0077B6, 0.9)
-    cardBg.fillRoundedRect(0, 0, cardWidth, 45, { tl: 22, tr: 22, bl: 0, br: 0 })
-
-    // Header shine
-    cardBg.fillStyle(0xFFFFFF, 0.15)
-    cardBg.fillRoundedRect(4, 4, cardWidth - 8, 20, { tl: 18, tr: 18, bl: 0, br: 0 })
-
-    // Border
-    cardBg.lineStyle(3, 0x0077B6, 1)
-    cardBg.strokeRoundedRect(0, 0, cardWidth, cardHeight, 22)
+    // Draw initial card background
+    this._redrawCardBg(cardHeight)
 
     // Avatar circle background with gradient
     const avatarBg = this.add.graphics()
@@ -1228,15 +1212,58 @@ export class UIScene extends Phaser.Scene {
     this.buttonContainer = this.add.container(0, 0).setVisible(false)
   }
 
+  // Redraw the card background at a given height
+  _redrawCardBg(cardHeight) {
+    const cardWidth = this._cardWidth
+    this._currentCardHeight = cardHeight
+    this._cardBg.clear()
+
+    // Outer glow
+    this._cardBg.fillStyle(0x87CEEB, 0.3)
+    this._cardBg.fillRoundedRect(-5, -5, cardWidth + 10, cardHeight + 10, 24)
+    // Shadow
+    this._cardBg.fillStyle(0x000000, 0.25)
+    this._cardBg.fillRoundedRect(5, 5, cardWidth, cardHeight, 22)
+    // Main card - frosted white
+    this._cardBg.fillStyle(0xFFFFFF, 0.95)
+    this._cardBg.fillRoundedRect(0, 0, cardWidth, cardHeight, 22)
+    // Blue header gradient
+    this._cardBg.fillStyle(0x005588, 1)
+    this._cardBg.fillRoundedRect(0, 0, cardWidth, 70, { tl: 22, tr: 22, bl: 0, br: 0 })
+    this._cardBg.fillStyle(0x0077B6, 0.9)
+    this._cardBg.fillRoundedRect(0, 0, cardWidth, 45, { tl: 22, tr: 22, bl: 0, br: 0 })
+    // Header shine
+    this._cardBg.fillStyle(0xFFFFFF, 0.15)
+    this._cardBg.fillRoundedRect(4, 4, cardWidth - 8, 20, { tl: 18, tr: 18, bl: 0, br: 0 })
+    // Border
+    this._cardBg.lineStyle(3, 0x0077B6, 1)
+    this._cardBg.strokeRoundedRect(0, 0, cardWidth, cardHeight, 22)
+  }
+
   showSelectionCard(unit) {
     this.selectedUnit = unit
     this.selectionCard.setVisible(true)
 
-    // Center the card
-    const cardWidth = 220
-    const cardHeight = 300
-    const centerX = (this.cameras.main.width - cardWidth) / 2
-    const centerY = (this.cameras.main.height - cardHeight) / 2
+    const cardWidth = this._cardWidth
+    const status = unit.status || 'idle'
+
+    // Compute dynamic card height based on status
+    const baseHeight = 160  // header + avatar + name + badge + padding
+    const hasProgress = (status === 'working' || status === 'stuck')
+    const progressHeight = hasProgress ? 55 : 0
+    const buttonCount = status === 'idle' ? 2 : (status === 'working' ? 3 : 4)
+    const buttonsHeight = buttonCount * 50
+    const watchingHeight = 25  // reserve space even if no watchers (avoids jitter)
+    const cardHeight = baseHeight + progressHeight + buttonsHeight + watchingHeight + 15
+
+    // Redraw card background at computed height
+    this._redrawCardBg(cardHeight)
+
+    // Re-center card on screen
+    const screenWidth = this.cameras.main.width
+    const screenHeight = this.cameras.main.height
+    const centerX = (screenWidth - cardWidth) / 2
+    const centerY = (screenHeight - cardHeight) / 2
     this.selectionCard.setPosition(centerX, centerY)
 
     // Animated entry - scale up from center
@@ -1266,7 +1293,6 @@ export class UIScene extends Phaser.Scene {
     this.cardName.setText(unit.unitName || 'Unknown')
 
     // Update status badge
-    const status = unit.status || 'idle'
     this.cardStatusBg.clear()
 
     let statusColor, statusText
@@ -1303,14 +1329,18 @@ export class UIScene extends Phaser.Scene {
     }
 
     // Show progress info for working/stuck units
-    if (status === 'working' || status === 'stuck') {
+    if (hasProgress) {
       this.showCardProgress(unit)
     }
+
+    // Position buttons dynamically below progress (or below badge if no progress)
+    const buttonsY = baseHeight + progressHeight
+    this.cardButtons.setY(buttonsY)
 
     // Create contextual action buttons
     this.createCardButtons(status)
 
-    // Update watching indicator
+    // Update watching indicator (positioned at bottom of dynamic card)
     this.updateWatchingIndicator()
 
     // Emit watching event to server
@@ -1334,8 +1364,8 @@ export class UIScene extends Phaser.Scene {
     const watchers = this.userWatchers.get(agentId)
 
     if (watchers && watchers.size > 0) {
-      // Create watching indicator at bottom of card
-      this.watchingIndicator = this.add.container(110, 280)
+      // Create watching indicator at bottom of dynamic card
+      this.watchingIndicator = this.add.container(110, this._currentCardHeight - 20)
 
       // Background pill
       const bg = this.add.graphics()
@@ -1358,9 +1388,9 @@ export class UIScene extends Phaser.Scene {
   }
 
   showCardProgress(unit) {
-    const cardWidth = 220
+    const cardWidth = this._cardWidth
 
-    this.cardProgressContainer = this.add.container(0, 155)
+    this.cardProgressContainer = this.add.container(0, 160)
 
     // Progress bar background
     const progressBg = this.add.graphics()
@@ -1939,7 +1969,7 @@ export class UIScene extends Phaser.Scene {
       const panelHeight = Math.min(400, 150 + polecats.length * 55)
 
       const picker = this.add.container(width/2, height/2)
-      picker.setDepth(1000)
+      picker.setDepth(1500)
 
       // Backdrop
       const backdrop = this.add.graphics()
@@ -2322,7 +2352,7 @@ export class UIScene extends Phaser.Scene {
       const modalHeight = 300 + Math.min(idlePolecats.length, 4) * 45
 
       this.reassignModal = this.add.container(width/2, height/2)
-      this.reassignModal.setDepth(1000)
+      this.reassignModal.setDepth(1500)
 
       // Backdrop
       const backdrop = this.add.graphics()
@@ -3058,6 +3088,26 @@ export class UIScene extends Phaser.Scene {
     if (this.statusText) {
       this.statusText.setPosition(width - 30, 40)
     }
+
+    if (this.usersContainer) {
+      this.usersContainer.setPosition(width - 320, 22)
+    }
+
+    // Reposition resource icons dynamically to the right side
+    if (this.resources) {
+      const rightBase = width - 30
+      const positions = {
+        convoys: rightBase - 0,    // Stamps: rightmost
+        issues: rightBase - 155,   // Fish: middle
+        tokens: rightBase - 310    // Coins: leftmost
+      }
+      Object.entries(this.resources).forEach(([key, res]) => {
+        const newX = positions[key]
+        if (res._iconContainer) res._iconContainer.setX(newX)
+        if (res.text) res.text.setX(newX + 28)
+        if (res._hitZone) res._hitZone.setX(newX)
+      })
+    }
   }
 
   createVillageNavigator() {
@@ -3264,7 +3314,7 @@ export class UIScene extends Phaser.Scene {
 
       // Modal container
       this.modal = this.add.container(width/2, height/2)
-      this.modal.setDepth(1000)
+      this.modal.setDepth(1500)
 
       // Backdrop
       const backdrop = this.add.graphics()
@@ -3453,7 +3503,7 @@ export class UIScene extends Phaser.Scene {
       const modalHeight = 200
 
       const picker = this.add.container(width/2, height/2)
-      picker.setDepth(1000)
+      picker.setDepth(1500)
 
       const backdrop = this.add.graphics()
       backdrop.fillStyle(0x000000, 0.6)
@@ -3914,15 +3964,19 @@ export class UIScene extends Phaser.Scene {
   // ===== TASK QUEUE / BACKLOG PANEL =====
 
   createTaskQueuePanel() {
-    const height = 200
+    const panelHeight = 200
     const x = 200
-    const y = this.cameras.main.height - height - 10
+    // Position container so toggle button sits at the very bottom edge
+    // Toggle button is 40px tall, sits above the panel
+    const screenHeight = this.cameras.main.height
+    const y = screenHeight - 40  // Bottom of screen minus toggle height
 
     this.taskQueue = this.add.container(x, y)
     this.taskQueue.setDepth(100)
+    this._queuePanelHeight = panelHeight
 
-    // Toggle button
-    this.queueToggleBtn = this.add.container(0, -50)
+    // Toggle button — sits at container origin (bottom edge of screen)
+    this.queueToggleBtn = this.add.container(0, 0)
     const toggleBg = this.add.graphics()
     toggleBg.fillStyle(0x3498DB, 0.9)
     toggleBg.fillRoundedRect(0, 0, 120, 40, { tl: 10, tr: 10, bl: 0, br: 0 })
@@ -3936,8 +3990,8 @@ export class UIScene extends Phaser.Scene {
     this.queueToggleText = toggleText
     this.taskQueue.add(this.queueToggleBtn)
 
-    // Queue panel (hidden initially)
-    this.queuePanel = this.add.container(0, 0)
+    // Queue panel (hidden initially) — positioned above toggle button
+    this.queuePanel = this.add.container(0, -panelHeight)
     this.queuePanel.setVisible(false)
     this.taskQueue.add(this.queuePanel)
 
@@ -3945,9 +3999,9 @@ export class UIScene extends Phaser.Scene {
 
     // Panel background
     const bg = this.add.graphics()
-    this.drawGlossyPanel(bg, 0, 0, width, height, 0x3498DB, 16)
+    this.drawGlossyPanel(bg, 0, 0, width, panelHeight, 0x3498DB, 16)
     bg.fillStyle(0xFFFFFF, 0.98)
-    bg.fillRoundedRect(8, 50, width - 16, height - 60, 12)
+    bg.fillRoundedRect(8, 50, width - 16, panelHeight - 60, 12)
     this.queuePanel.add(bg)
 
     // Title
@@ -3993,10 +4047,11 @@ export class UIScene extends Phaser.Scene {
 
   toggleTaskQueue() {
     const isVisible = this.queuePanel.visible
+    const panelHeight = this._queuePanelHeight || 200
     if (isVisible) {
       this.tweens.add({
         targets: this.queuePanel,
-        y: 250,
+        y: 0,
         alpha: 0,
         duration: 200,
         ease: 'Back.easeIn',
@@ -4004,11 +4059,11 @@ export class UIScene extends Phaser.Scene {
       })
     } else {
       this.queuePanel.setVisible(true)
-      this.queuePanel.setY(250)
+      this.queuePanel.setY(0)
       this.queuePanel.setAlpha(0)
       this.tweens.add({
         targets: this.queuePanel,
-        y: 0,
+        y: -panelHeight,
         alpha: 1,
         duration: 300,
         ease: 'Back.easeOut'
@@ -4169,7 +4224,7 @@ export class UIScene extends Phaser.Scene {
       const modalHeight = 150 + Math.min(polecats.length, 5) * 45
 
       const picker = this.add.container(width/2, height/2)
-      picker.setDepth(1000)
+      picker.setDepth(1500)
 
       const backdrop = this.add.graphics()
       backdrop.fillStyle(0x000000, 0.6)
@@ -4499,16 +4554,21 @@ export class UIScene extends Phaser.Scene {
   async showAgentOutput(agentId, rigName) {
     const width = this.cameras.main.width
     const height = this.cameras.main.height
-    const modalWidth = 600
-    const modalHeight = 500
+    const modalWidth = 700
+    const modalHeight = 550
 
     // Destroy existing viewer if open
     if (this.outputViewer) {
+      if (this._logPollInterval) {
+        clearInterval(this._logPollInterval)
+        this._logPollInterval = null
+      }
       this.outputViewer.destroy()
     }
 
     this.outputViewer = this.add.container(width/2, height/2)
-    this.outputViewer.setDepth(1000)
+    this.outputViewer.setDepth(1500)
+    this._outputViewerAgentId = agentId
 
     // Backdrop
     const backdrop = this.add.graphics()
@@ -4530,42 +4590,83 @@ export class UIScene extends Phaser.Scene {
       strokeThickness: 2
     }).setOrigin(0.5)
 
+    // Session status indicator (right of title)
+    const sessionDot = this.add.graphics()
+    const sessionLabel = this.add.text(modalWidth/2 - 100, -modalHeight/2 + 30, 'loading...', {
+      font: '11px Fredoka',
+      fill: '#7F8C8D'
+    }).setOrigin(0.5)
+
     // Close button
     const closeBtn = this.add.graphics()
     closeBtn.fillStyle(0xFF6B6B, 0.9)
     closeBtn.fillCircle(modalWidth/2 - 25, -modalHeight/2 + 25, 14)
-    const closeX = this.add.text(modalWidth/2 - 25, -modalHeight/2 + 25, '×', {
+    const closeX = this.add.text(modalWidth/2 - 25, -modalHeight/2 + 25, '\u00d7', {
       font: 'bold 18px Fredoka',
       fill: '#FFFFFF'
     }).setOrigin(0.5)
     const closeZone = this.add.zone(modalWidth/2 - 25, -modalHeight/2 + 25, 28, 28).setInteractive({ useHandCursor: true })
     closeZone.on('pointerup', () => {
+      if (this._logPollInterval) {
+        clearInterval(this._logPollInterval)
+        this._logPollInterval = null
+      }
       this.outputViewer.destroy()
       this.outputViewer = null
     })
 
-    this.outputViewer.add([backdrop, panel, title, closeBtn, closeX, closeZone])
+    this.outputViewer.add([backdrop, panel, title, sessionDot, sessionLabel, closeBtn, closeX, closeZone])
 
     // Loading text
-    const loading = this.add.text(0, 0, 'Loading output...', {
+    const loading = this.add.text(0, 0, 'Loading logs...', {
       font: '14px Fredoka',
       fill: '#7F8C8D'
     }).setOrigin(0.5)
     this.outputViewer.add(loading)
 
-    // Fetch agent status/output
+    // Fetch agent logs + status
     try {
-      const status = await this.api.getHook(agentId)
+      const [logData, hookData] = await Promise.all([
+        this.api.getAgentLogs(agentId),
+        this.api.getHook(agentId)
+      ])
       loading.destroy()
 
-      // Output text area
-      const outputContent = this.formatAgentOutput(status)
-      const outputText = this.add.text(-modalWidth/2 + 25, -modalHeight/2 + 75, outputContent, {
-        font: '12px monospace',
+      // Update session indicator
+      this._updateSessionIndicator(sessionDot, sessionLabel, logData.sessionActive)
+
+      // Status header line
+      const statusHeader = this.formatStatusHeader(hookData)
+      const headerText = this.add.text(-modalWidth/2 + 25, -modalHeight/2 + 68, statusHeader, {
+        font: '11px monospace',
+        fill: '#F39C12',
+        wordWrap: { width: modalWidth - 50 }
+      })
+      this.outputViewer.add(headerText)
+
+      // Log text area — scrollable monospace output
+      const logAreaY = -modalHeight/2 + 100
+      const logAreaHeight = modalHeight - 170
+      const logContent = logData.logs || '(No session output available)'
+
+      // Truncate to fit display (Phaser text has limits)
+      const maxLines = Math.floor(logAreaHeight / 14)
+      const logLines = logContent.split('\n')
+      const displayedLines = logLines.slice(-maxLines).join('\n')
+
+      const logText = this.add.text(-modalWidth/2 + 25, logAreaY, displayedLines, {
+        font: '11px monospace',
         fill: '#2ECC71',
         wordWrap: { width: modalWidth - 50 }
       })
-      this.outputViewer.add(outputText)
+      this.outputViewer.add(logText)
+
+      // Store reference for polling updates
+      this._logText = logText
+      this._logHeaderText = headerText
+      this._logSessionDot = sessionDot
+      this._logSessionLabel = sessionLabel
+      this._logMaxLines = maxLines
 
       // Action buttons at bottom
       const btnY = modalHeight/2 - 45
@@ -4573,25 +4674,39 @@ export class UIScene extends Phaser.Scene {
       // Copy button
       const copyBtn = this.add.graphics()
       this.drawButton(copyBtn, -modalWidth/2 + 20, btnY, 120, 36, 0x3498DB, true)
-      const copyText = this.add.text(-modalWidth/2 + 80, btnY + 18, '📋 COPY', {
+      const copyText = this.add.text(-modalWidth/2 + 80, btnY + 18, 'COPY', {
         font: 'bold 12px Fredoka',
         fill: '#FFFFFF'
       }).setOrigin(0.5)
       const copyZone = this.add.zone(-modalWidth/2 + 80, btnY + 18, 120, 36).setInteractive({ useHandCursor: true })
       copyZone.on('pointerup', () => {
-        navigator.clipboard.writeText(outputContent)
-        this.showNotification('success', 'Copied', 'Output copied to clipboard')
+        navigator.clipboard.writeText(logContent)
+        this.showNotification('success', 'Copied', 'Logs copied to clipboard')
       })
       this.outputViewer.add([copyBtn, copyText, copyZone])
 
-      // View diff button (placeholder)
-      const diffBtn = this.add.graphics()
-      this.drawButton(diffBtn, -modalWidth/2 + 150, btnY, 120, 36, 0x9B59B6, true)
-      const diffText = this.add.text(-modalWidth/2 + 210, btnY + 18, '📝 DIFF', {
+      // Refresh button
+      const refreshBtn = this.add.graphics()
+      this.drawButton(refreshBtn, -modalWidth/2 + 150, btnY, 120, 36, 0x27AE60, true)
+      const refreshText = this.add.text(-modalWidth/2 + 210, btnY + 18, 'REFRESH', {
         font: 'bold 12px Fredoka',
         fill: '#FFFFFF'
       }).setOrigin(0.5)
-      this.outputViewer.add([diffBtn, diffText])
+      const refreshZone = this.add.zone(-modalWidth/2 + 210, btnY + 18, 120, 36).setInteractive({ useHandCursor: true })
+      refreshZone.on('pointerup', () => {
+        this._refreshLogs(agentId)
+      })
+      this.outputViewer.add([refreshBtn, refreshText, refreshZone])
+
+      // Start auto-refresh polling (every 3 seconds)
+      this._logPollInterval = setInterval(() => {
+        if (this.outputViewer && this._outputViewerAgentId === agentId) {
+          this._refreshLogs(agentId)
+        } else {
+          clearInterval(this._logPollInterval)
+          this._logPollInterval = null
+        }
+      }, 3000)
 
     } catch (e) {
       loading.setText(`Failed to load: ${e.message}`)
@@ -4610,41 +4725,54 @@ export class UIScene extends Phaser.Scene {
     })
   }
 
-  formatAgentOutput(status) {
-    let output = ''
-    output += `Status: ${status.status || 'unknown'}\n`
-    output += `Task: ${status.hook || 'None'}\n\n`
+  async _refreshLogs(agentId) {
+    try {
+      const [logData, hookData] = await Promise.all([
+        this.api.getAgentLogs(agentId),
+        this.api.getHook(agentId)
+      ])
 
-    if (status.assignedAt) {
-      output += `Started: ${new Date(status.assignedAt).toLocaleString()}\n`
-    }
-
-    if (status.tokensUsed) {
-      output += `Tokens: ${status.tokensUsed.toLocaleString()}\n`
-    }
-
-    if (status.progress !== undefined) {
-      output += `Progress: ${status.progress}%\n`
-    }
-
-    if (status.stuckReason) {
-      output += `\n⚠ STUCK: ${status.stuckReason}\n`
-      if (status.stuckAt) {
-        output += `Since: ${new Date(status.stuckAt).toLocaleString()}\n`
+      if (this._logText && this._logText.active) {
+        const logLines = (logData.logs || '').split('\n')
+        const displayedLines = logLines.slice(-this._logMaxLines).join('\n')
+        this._logText.setText(displayedLines)
       }
-    }
 
-    if (status.completedTask) {
-      output += `\n✓ Completed: ${status.completedTask}\n`
-      if (status.completedAt) {
-        output += `At: ${new Date(status.completedAt).toLocaleString()}\n`
+      if (this._logHeaderText && this._logHeaderText.active) {
+        this._logHeaderText.setText(this.formatStatusHeader(hookData))
       }
+
+      if (this._logSessionDot && this._logSessionLabel) {
+        this._updateSessionIndicator(this._logSessionDot, this._logSessionLabel, logData.sessionActive)
+      }
+    } catch (e) {
+      // Silent fail on refresh — don't disrupt the UI
     }
+  }
 
-    output += '\n--- Logs would appear here ---\n'
-    output += '(Full log integration coming soon)'
+  _updateSessionIndicator(dot, label, isActive) {
+    dot.clear()
+    if (isActive) {
+      dot.fillStyle(0x2ECC71, 1)
+      dot.fillCircle(-130 + (700/2), -(550/2) + 30, 5)
+      label.setText('SESSION LIVE')
+      label.setStyle({ fill: '#2ECC71' })
+    } else {
+      dot.fillStyle(0xE74C3C, 1)
+      dot.fillCircle(-130 + (700/2), -(550/2) + 30, 5)
+      label.setText('NO SESSION')
+      label.setStyle({ fill: '#E74C3C' })
+    }
+  }
 
-    return output
+  formatStatusHeader(hookData) {
+    const parts = []
+    parts.push(`Status: ${hookData.status || 'unknown'}`)
+    if (hookData.hook) parts.push(`Task: ${hookData.hook}`)
+    if (hookData.tokensUsed) parts.push(`Tokens: ${hookData.tokensUsed.toLocaleString()}`)
+    if (hookData.assignedAt) parts.push(`Since: ${new Date(hookData.assignedAt).toLocaleString()}`)
+    if (hookData.stuckReason) parts.push(`STUCK: ${hookData.stuckReason}`)
+    return parts.join('  |  ')
   }
 
   // ===== GITHUB INTEGRATION PANEL =====
@@ -5123,7 +5251,7 @@ export class UIScene extends Phaser.Scene {
     const panelHeight = 450
 
     const picker = this.add.container(width/2, height/2)
-    picker.setDepth(1000)
+    picker.setDepth(1500)
 
     const backdrop = this.add.graphics()
     backdrop.fillStyle(0x000000, 0.6)
@@ -5313,7 +5441,7 @@ export class UIScene extends Phaser.Scene {
 
     // Modal container
     this.enduranceModal = this.add.container(width/2, height/2)
-    this.enduranceModal.setDepth(1000)
+    this.enduranceModal.setDepth(1500)
     this.enduranceModal.setAlpha(0)
     this.enduranceModal.setScale(0.8)
 
