@@ -486,7 +486,7 @@ app.get('/api/rigs', (req, res) => {
 
 // POST /api/rigs - Create a new rig
 app.post('/api/rigs', (req, res) => {
-  const { name } = req.body
+  const { name, gitUrl } = req.body
   if (!name) {
     return res.status(400).json({ error: 'Rig name required' })
   }
@@ -496,10 +496,27 @@ app.post('/api/rigs', (req, res) => {
     return res.status(400).json({ error: 'Invalid rig name. Use alphanumeric, dashes, or underscores.' })
   }
 
-  // Create rig directory (gt rig create doesn't exist, so we just mkdir)
-  const rigPath = join(TOWN_ROOT, name)
   try {
-    execSync(`mkdir -p "${rigPath}"`, { encoding: 'utf-8', shell: true })
+    if (gitUrl) {
+      // Use gt rig add to properly register with git URL
+      const result = gt(`rig add ${name} "${gitUrl}"`)
+      if (result === null) {
+        // Fallback: create directory manually if gt rig add fails
+        console.warn(`gt rig add failed for ${name}, falling back to mkdir`)
+        const rigPath = join(TOWN_ROOT, name)
+        execSync(`mkdir -p "${rigPath}"`, { encoding: 'utf-8', shell: true })
+      }
+    } else {
+      // No git URL — create directory, then adopt it as a rig
+      const rigPath = join(TOWN_ROOT, name)
+      execSync(`mkdir -p "${rigPath}"`, { encoding: 'utf-8', shell: true })
+      // Try to register with gt (non-fatal if it fails)
+      const adoptResult = gt(`rig add ${name} --adopt --force`)
+      if (adoptResult === null) {
+        console.warn(`gt rig add --adopt failed for ${name} (non-fatal)`)
+      }
+    }
+
     // Broadcast new rig to all connected users
     multiplayer.broadcastStateUpdate({ event: 'rig:created', rig: name })
 
@@ -564,27 +581,42 @@ app.post('/api/rigs/:name/clone', (req, res) => {
     // Directory doesn't exist, proceed with clone
   }
 
-  // Try gt clone first, fallback to git clone
+  // Try gt rig add first (proper registration + clone), fallback to git clone
   const branchArg = branch ? `--branch ${branch}` : ''
-  let result = gt(`clone ${repo} ${branchArg}`, rigPath)
+  let registered = false
 
-  // Fallback to direct git clone if gt clone fails
-  if (result === null) {
-    try {
-      const gitBranchArg = branch ? `-b ${branch}` : ''
-      result = execSync(`git clone ${gitBranchArg} "${repo}"`, {
-        cwd: rigPath,
-        encoding: 'utf-8',
-        timeout: 120000,  // 2 min timeout for large repos
-        shell: true
-      })
-    } catch (e) {
-      console.error('Git clone failed:', e.message)
-      return res.status(500).json({ error: `Failed to clone: ${e.message}` })
+  // Try registering as a proper gt rig with the repo URL
+  const rigAddResult = gt(`rig add ${name} "${repo}" ${branchArg}`)
+  if (rigAddResult !== null) {
+    registered = true
+  } else {
+    // Fallback: gt clone into rig directory
+    let result = gt(`clone ${repo} ${branchArg}`, rigPath)
+
+    // Final fallback: direct git clone
+    if (result === null) {
+      try {
+        const gitBranchArg = branch ? `-b ${branch}` : ''
+        result = execSync(`git clone ${gitBranchArg} "${repo}"`, {
+          cwd: rigPath,
+          encoding: 'utf-8',
+          timeout: 120000,  // 2 min timeout for large repos
+          shell: true
+        })
+      } catch (e) {
+        console.error('Git clone failed:', e.message)
+        return res.status(500).json({ error: `Failed to clone: ${e.message}` })
+      }
+    }
+
+    // Try to adopt the rig if clone worked but gt rig add didn't
+    if (!registered) {
+      const adoptResult = gt(`rig add ${name} --adopt --url "${repo}"`)
+      if (adoptResult !== null) registered = true
     }
   }
 
-  multiplayer.broadcastStateUpdate({ event: 'repo:cloned', rig: name, repo })
+  multiplayer.broadcastStateUpdate({ event: 'repo:cloned', rig: name, repo, registered })
 
   // Add to activity feed
   addActivityEvent('repo_cloned', {
@@ -592,7 +624,7 @@ app.post('/api/rigs/:name/clone', (req, res) => {
     repo
   }, req.session?.passport?.user)
 
-  res.json({ success: true, repo })
+  res.json({ success: true, repo, registered })
 })
 
 // POST /api/rigs/:name/polecats - Spawn a new polecat in a rig

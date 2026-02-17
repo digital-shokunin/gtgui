@@ -7,6 +7,11 @@ const GITHUB_CLIENT_ID = process.env.GITHUB_CLIENT_ID || ''
 const GITHUB_CLIENT_SECRET = process.env.GITHUB_CLIENT_SECRET || ''
 const CALLBACK_URL = process.env.CALLBACK_URL || 'http://localhost:8080/auth/github/callback'
 
+// Allowed GitHub usernames (comma-separated env var). Empty = allow all.
+const ALLOWED_GITHUB_USERS = process.env.ALLOWED_GITHUB_USERS
+  ? process.env.ALLOWED_GITHUB_USERS.split(',').map(u => u.trim().toLowerCase())
+  : []
+
 // User store (in-memory for small team)
 const users = new Map()
 
@@ -44,6 +49,15 @@ export function setupAuth(app) {
       clientSecret: GITHUB_CLIENT_SECRET,
       callbackURL: CALLBACK_URL
     }, (accessToken, refreshToken, profile, done) => {
+      // Check allowlist if configured
+      if (ALLOWED_GITHUB_USERS.length > 0) {
+        const username = (profile.username || '').toLowerCase()
+        if (!ALLOWED_GITHUB_USERS.includes(username)) {
+          console.warn(`GitHub login denied for user: ${profile.username} (not in ALLOWED_GITHUB_USERS)`)
+          return done(null, false, { message: 'Access denied. Your GitHub account is not authorized.' })
+        }
+      }
+
       // Create/update user
       const user = {
         id: profile.id,
