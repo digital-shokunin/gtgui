@@ -637,19 +637,16 @@ export class UIScene extends Phaser.Scene {
     this.drawGlossyPanel(this.topBar, 10, 8, width - 20, 50, 0x0077B6, 14)
 
     // Resource displays (Club Penguin style - coins, fish, stamps)
-    // Right-aligned dynamically based on screen width
-    // Spacing: 155px between each, rightmost at width - 30
-    const rightBase = width - 30
+    // Left-aligned with fixed positions in header bar
     this.resources = {
-      tokens: { icon: 'icon-tokens', value: 0, x: rightBase - 310, label: 'Coins', displayValue: 0 },
-      issues: { icon: 'icon-issues', value: 0, x: rightBase - 155, label: 'Fish', displayValue: 0 },
-      convoys: { icon: 'icon-convoys', value: 0, x: rightBase - 0, label: 'Stamps', displayValue: 0 }
+      tokens: { icon: 'icon-tokens', value: 0, x: 45, label: 'Coins', displayValue: 0 },
+      issues: { icon: 'icon-issues', value: 0, x: 200, label: 'Fish', displayValue: 0 },
+      convoys: { icon: 'icon-convoys', value: 0, x: 355, label: 'Stamps', displayValue: 0 }
     }
 
     Object.entries(this.resources).forEach(([key, res]) => {
       // Icon with glow container
       const iconContainer = this.add.container(res.x, 33)
-      res._iconContainer = iconContainer  // Store ref for resize
 
       // Icon glow
       const glow = this.add.graphics()
@@ -669,7 +666,6 @@ export class UIScene extends Phaser.Scene {
 
       // Hover effect on icon
       const hitZone = this.add.zone(res.x, 33, 50, 40).setInteractive()
-      res._hitZone = hitZone  // Store ref for resize
       hitZone.on('pointerover', () => {
         this.tweens.add({
           targets: res.iconSprite,
@@ -1310,6 +1306,9 @@ export class UIScene extends Phaser.Scene {
         statusText = 'IDLE'
     }
 
+    // Set text FIRST so we can measure its width for the badge
+    this.cardStatus.setText(statusText)
+
     const textWidth = this.cardStatus.width + 24
     // Badge with gradient
     const darkStatus = this.darkenColor(statusColor, 40)
@@ -1320,8 +1319,6 @@ export class UIScene extends Phaser.Scene {
     // Shine
     this.cardStatusBg.fillStyle(0xFFFFFF, 0.25)
     this.cardStatusBg.fillRoundedRect(110 - textWidth/2 + 3, 130, textWidth - 6, 8, { tl: 8, tr: 8, bl: 0, br: 0 })
-
-    this.cardStatus.setText(statusText)
 
     // Clear previous progress info
     if (this.cardProgressContainer) {
@@ -1888,7 +1885,10 @@ export class UIScene extends Phaser.Scene {
       return
     }
 
-    const agentId = unit.id || 'unknown'
+    // Build proper agent path for API calls: rig/polecats/polecatName
+    // unit.id is "polecat-{name}" (game ID), unit.unitName is the raw polecat name
+    const polecatName = unit.unitName || unit.id
+    const agentId = unit.rig ? `${unit.rig}/polecats/${polecatName}` : polecatName
     console.log('Executing command:', action, 'on', agentId)
 
     switch(action) {
@@ -2651,9 +2651,10 @@ export class UIScene extends Phaser.Scene {
       this.chatInput.style.cssText = `
         position: fixed;
         right: 100px;
-        bottom: calc(100vh - ${70 + 450 - 55}px);
+        top: ${70 + 450 - 60}px;
         width: 250px;
-        height: 30px;
+        height: 36px;
+        padding: 0 8px;
         font-family: Fredoka, sans-serif;
         font-size: 14px;
         border: none;
@@ -3091,22 +3092,6 @@ export class UIScene extends Phaser.Scene {
 
     if (this.usersContainer) {
       this.usersContainer.setPosition(width - 320, 22)
-    }
-
-    // Reposition resource icons dynamically to the right side
-    if (this.resources) {
-      const rightBase = width - 30
-      const positions = {
-        convoys: rightBase - 0,    // Stamps: rightmost
-        issues: rightBase - 155,   // Fish: middle
-        tokens: rightBase - 310    // Coins: leftmost
-      }
-      Object.entries(this.resources).forEach(([key, res]) => {
-        const newX = positions[key]
-        if (res._iconContainer) res._iconContainer.setX(newX)
-        if (res.text) res.text.setX(newX + 28)
-        if (res._hitZone) res._hitZone.setX(newX)
-      })
     }
   }
 
@@ -4049,6 +4034,7 @@ export class UIScene extends Phaser.Scene {
     const isVisible = this.queuePanel.visible
     const panelHeight = this._queuePanelHeight || 200
     if (isVisible) {
+      // Close: slide panel down and toggle button back to bottom
       this.tweens.add({
         targets: this.queuePanel,
         y: 0,
@@ -4057,7 +4043,14 @@ export class UIScene extends Phaser.Scene {
         ease: 'Back.easeIn',
         onComplete: () => this.queuePanel.setVisible(false)
       })
+      this.tweens.add({
+        targets: this.queueToggleBtn,
+        y: 0,
+        duration: 200,
+        ease: 'Back.easeIn'
+      })
     } else {
+      // Open: slide panel up and toggle button rides up like a folder tab
       this.queuePanel.setVisible(true)
       this.queuePanel.setY(0)
       this.queuePanel.setAlpha(0)
@@ -4065,6 +4058,12 @@ export class UIScene extends Phaser.Scene {
         targets: this.queuePanel,
         y: -panelHeight,
         alpha: 1,
+        duration: 300,
+        ease: 'Back.easeOut'
+      })
+      this.tweens.add({
+        targets: this.queueToggleBtn,
+        y: -panelHeight,
         duration: 300,
         ease: 'Back.easeOut'
       })
