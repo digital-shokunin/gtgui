@@ -314,7 +314,7 @@ export class UIScene extends Phaser.Scene {
     const width = this.cameras.main.width
 
     // Gear icon button in top bar (left of town name, right of Online indicator)
-    const btnX = width - 235
+    const btnX = width - 220
     const btnY = 33
 
     this.settingsBtn = this.add.container(btnX, btnY)
@@ -637,11 +637,11 @@ export class UIScene extends Phaser.Scene {
     this.drawGlossyPanel(this.topBar, 10, 8, width - 20, 50, 0x0077B6, 14)
 
     // Resource displays (Club Penguin style - coins, fish, stamps)
-    // Left-aligned with fixed positions in header bar
+    // Left-aligned with tighter spacing in header bar
     this.resources = {
       tokens: { icon: 'icon-tokens', value: 0, x: 45, label: 'Coins', displayValue: 0 },
-      issues: { icon: 'icon-issues', value: 0, x: 200, label: 'Fish', displayValue: 0 },
-      convoys: { icon: 'icon-convoys', value: 0, x: 355, label: 'Stamps', displayValue: 0 }
+      issues: { icon: 'icon-issues', value: 0, x: 150, label: 'Fish', displayValue: 0 },
+      convoys: { icon: 'icon-convoys', value: 0, x: 255, label: 'Stamps', displayValue: 0 }
     }
 
     Object.entries(this.resources).forEach(([key, res]) => {
@@ -713,7 +713,7 @@ export class UIScene extends Phaser.Scene {
 
   createMiniStatusBar() {
     // Position between resources and users indicator
-    this.miniStatusBar = this.add.container(480, 33)
+    this.miniStatusBar = this.add.container(370, 33)
 
     // Status counts
     this.miniStatusText = this.add.text(0, 0, '', {
@@ -791,7 +791,7 @@ export class UIScene extends Phaser.Scene {
     const width = this.cameras.main.width
 
     // Users container (positioned to the left of settings gear, vertically centered in header)
-    this.usersContainer = this.add.container(width - 290, 33)
+    this.usersContainer = this.add.container(width - 265, 33)
 
     // "Online:" label
     this.usersLabel = this.add.text(0, 0, 'Online:', {
@@ -3091,11 +3091,11 @@ export class UIScene extends Phaser.Scene {
     }
 
     if (this.usersContainer) {
-      this.usersContainer.setPosition(width - 290, 33)
+      this.usersContainer.setPosition(width - 265, 33)
     }
 
     if (this.settingsBtn) {
-      this.settingsBtn.setPosition(width - 235, 33)
+      this.settingsBtn.setPosition(width - 220, 33)
     }
   }
 
@@ -4811,8 +4811,8 @@ export class UIScene extends Phaser.Scene {
     this.githubToggleBtn.add([toggleBg, toggleIcon, toggleZone])
     this.githubPanel.add(this.githubToggleBtn)
 
-    // Panel (hidden initially) — expands to the left of toggle button
-    this.githubPanelContent = this.add.container(-width + 40, 0)
+    // Panel (hidden initially) — expands to the left of toggle button, aligned with cost dashboard
+    this.githubPanelContent = this.add.container(-width + 40, 50)
     this.githubPanelContent.setVisible(false)
     this.githubPanel.add(this.githubPanelContent)
 
