@@ -313,8 +313,8 @@ export class UIScene extends Phaser.Scene {
   createSettingsButton() {
     const width = this.cameras.main.width
 
-    // Gear icon button in top bar (left of town name)
-    const btnX = width - 180
+    // Gear icon button in top bar (left of town name, right of Online indicator)
+    const btnX = width - 235
     const btnY = 33
 
     this.settingsBtn = this.add.container(btnX, btnY)
@@ -790,8 +790,8 @@ export class UIScene extends Phaser.Scene {
   createUsersIndicator() {
     const width = this.cameras.main.width
 
-    // Users container (positioned to the left of the title, vertically centered in header)
-    this.usersContainer = this.add.container(width - 320, 22)
+    // Users container (positioned to the left of settings gear, vertically centered in header)
+    this.usersContainer = this.add.container(width - 290, 33)
 
     // "Online:" label
     this.usersLabel = this.add.text(0, 0, 'Online:', {
@@ -3091,7 +3091,11 @@ export class UIScene extends Phaser.Scene {
     }
 
     if (this.usersContainer) {
-      this.usersContainer.setPosition(width - 320, 22)
+      this.usersContainer.setPosition(width - 290, 33)
+    }
+
+    if (this.settingsBtn) {
+      this.settingsBtn.setPosition(width - 235, 33)
     }
   }
 
@@ -4280,8 +4284,9 @@ export class UIScene extends Phaser.Scene {
   createCostDashboardPanel() {
     const width = 300
     const height = 400
-    const x = this.cameras.main.width - width - 10
-    const y = 70
+    const screenWidth = this.cameras.main.width
+    const x = screenWidth - 50
+    const y = 65
 
     this.costDashboard = this.add.container(x, y)
     this.costDashboard.setDepth(100)
@@ -4299,8 +4304,8 @@ export class UIScene extends Phaser.Scene {
     this.costToggleBtn.add([toggleBg, toggleIcon, toggleZone])
     this.costDashboard.add(this.costToggleBtn)
 
-    // Dashboard panel (hidden initially)
-    this.costPanel = this.add.container(0, 50)
+    // Dashboard panel (hidden initially) — expands left from toggle button
+    this.costPanel = this.add.container(-width + 40, 50)
     this.costPanel.setVisible(false)
     this.costDashboard.add(this.costPanel)
 
@@ -4352,11 +4357,12 @@ export class UIScene extends Phaser.Scene {
   }
 
   toggleCostDashboard() {
+    const panelOpenX = -260  // -width + 40, panel expands left
     const isVisible = this.costPanel.visible
     if (isVisible) {
       this.tweens.add({
         targets: this.costPanel,
-        x: 300,
+        x: 50,
         alpha: 0,
         duration: 200,
         ease: 'Back.easeIn',
@@ -4364,11 +4370,11 @@ export class UIScene extends Phaser.Scene {
       })
     } else {
       this.costPanel.setVisible(true)
-      this.costPanel.setX(300)
+      this.costPanel.setX(50)
       this.costPanel.setAlpha(0)
       this.tweens.add({
         targets: this.costPanel,
-        x: 0,
+        x: panelOpenX,
         alpha: 1,
         duration: 300,
         ease: 'Back.easeOut'
@@ -4553,8 +4559,8 @@ export class UIScene extends Phaser.Scene {
   async showAgentOutput(agentId, rigName) {
     const width = this.cameras.main.width
     const height = this.cameras.main.height
-    const modalWidth = 700
-    const modalHeight = 550
+    const modalWidth = Math.min(900, width - 60)
+    const modalHeight = Math.min(600, height - 60)
 
     // Destroy existing viewer if open
     if (this.outputViewer) {
@@ -4581,20 +4587,22 @@ export class UIScene extends Phaser.Scene {
     panel.fillStyle(0x1E272E, 1)
     panel.fillRoundedRect(-modalWidth/2 + 10, -modalHeight/2 + 60, modalWidth - 20, modalHeight - 80, 12)
 
-    // Title
-    const title = this.add.text(0, -modalHeight/2 + 30, `AGENT OUTPUT: ${agentId}`, {
-      font: 'bold 18px Fredoka',
+    // Title — truncate agent path if too long for modal
+    const maxTitleLen = Math.floor((modalWidth - 200) / 10)
+    const displayId = agentId.length > maxTitleLen ? '...' + agentId.slice(-maxTitleLen) : agentId
+    const title = this.add.text(-modalWidth/2 + 20, -modalHeight/2 + 30, `AGENT OUTPUT: ${displayId}`, {
+      font: 'bold 16px Fredoka',
       fill: '#FFFFFF',
       stroke: '#1A252F',
       strokeThickness: 2
-    }).setOrigin(0.5)
+    }).setOrigin(0, 0.5)
 
-    // Session status indicator (right of title)
+    // Session status indicator (far right of title bar)
     const sessionDot = this.add.graphics()
-    const sessionLabel = this.add.text(modalWidth/2 - 100, -modalHeight/2 + 30, 'loading...', {
+    const sessionLabel = this.add.text(modalWidth/2 - 60, -modalHeight/2 + 30, 'loading...', {
       font: '11px Fredoka',
       fill: '#7F8C8D'
-    }).setOrigin(0.5)
+    }).setOrigin(1, 0.5)
 
     // Close button
     const closeBtn = this.add.graphics()
@@ -4643,9 +4651,10 @@ export class UIScene extends Phaser.Scene {
       })
       this.outputViewer.add(headerText)
 
-      // Log text area — scrollable monospace output
-      const logAreaY = -modalHeight/2 + 100
-      const logAreaHeight = modalHeight - 170
+      // Log text area — starts below the status header with enough space
+      const headerHeight = headerText.height || 14
+      const logAreaY = -modalHeight/2 + 72 + headerHeight + 8
+      const logAreaHeight = modalHeight - (72 + headerHeight + 8) - 70
       const logContent = logData.logs || '(No session output available)'
 
       // Truncate to fit display (Phaser text has limits)
@@ -4751,14 +4760,17 @@ export class UIScene extends Phaser.Scene {
 
   _updateSessionIndicator(dot, label, isActive) {
     dot.clear()
+    // Position dot just to the left of the label
+    const dotX = label.x - label.width - 12
+    const dotY = label.y
     if (isActive) {
       dot.fillStyle(0x2ECC71, 1)
-      dot.fillCircle(-130 + (700/2), -(550/2) + 30, 5)
+      dot.fillCircle(dotX, dotY, 5)
       label.setText('SESSION LIVE')
       label.setStyle({ fill: '#2ECC71' })
     } else {
       dot.fillStyle(0xE74C3C, 1)
-      dot.fillCircle(-130 + (700/2), -(550/2) + 30, 5)
+      dot.fillCircle(dotX, dotY, 5)
       label.setText('NO SESSION')
       label.setStyle({ fill: '#E74C3C' })
     }
@@ -4779,8 +4791,9 @@ export class UIScene extends Phaser.Scene {
   createGitHubPanel() {
     const width = 320
     const height = 450
-    const x = this.cameras.main.width - width - 60
-    const y = 70
+    const screenWidth = this.cameras.main.width
+    const x = screenWidth - 100
+    const y = 65
 
     this.githubPanel = this.add.container(x, y)
     this.githubPanel.setDepth(100)
@@ -4798,8 +4811,8 @@ export class UIScene extends Phaser.Scene {
     this.githubToggleBtn.add([toggleBg, toggleIcon, toggleZone])
     this.githubPanel.add(this.githubToggleBtn)
 
-    // Panel (hidden initially)
-    this.githubPanelContent = this.add.container(50, 0)
+    // Panel (hidden initially) — expands to the left of toggle button
+    this.githubPanelContent = this.add.container(-width + 40, 0)
     this.githubPanelContent.setVisible(false)
     this.githubPanel.add(this.githubPanelContent)
 
@@ -4893,11 +4906,12 @@ export class UIScene extends Phaser.Scene {
   }
 
   toggleGitHubPanel() {
+    const panelOpenX = -280  // -width + 40, panel expands left
     const isVisible = this.githubPanelContent.visible
     if (isVisible) {
       this.tweens.add({
         targets: this.githubPanelContent,
-        x: 350,
+        x: 50,
         alpha: 0,
         duration: 200,
         ease: 'Back.easeIn',
@@ -4905,11 +4919,11 @@ export class UIScene extends Phaser.Scene {
       })
     } else {
       this.githubPanelContent.setVisible(true)
-      this.githubPanelContent.setX(350)
+      this.githubPanelContent.setX(50)
       this.githubPanelContent.setAlpha(0)
       this.tweens.add({
         targets: this.githubPanelContent,
-        x: 50,
+        x: panelOpenX,
         alpha: 1,
         duration: 300,
         ease: 'Back.easeOut'
