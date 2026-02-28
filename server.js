@@ -378,10 +378,10 @@ function parseAgentId(agentId) {
 // Check if a tmux session is alive for a given rig/polecat
 function isSessionAlive(rigName, polecatName) {
   try {
-    const result = gt(`session status ${rigName}/${polecatName} --json`)
+    const result = gt(`session status ${rigName}/${polecatName}`)
     if (result) {
-      const parsed = JSON.parse(result)
-      return parsed.running === true || parsed.alive === true
+      // gt session status returns text like "State: ● running" or "State: ○ stopped"
+      return result.includes('running')
     }
   } catch {
     // Fallback: check tmux directly
@@ -419,20 +419,13 @@ function listRigs() {
 
     if (!dirs) return []
 
-    // Filter to only directories that look like rigs (not hidden, not special)
+    // Only include directories that have a polecats/ subdirectory (actual rigs)
     const rigs = []
     for (const name of dirs.split('\n').filter(Boolean)) {
-      if (name.startsWith('.') || name === 'plugins' || name === 'settings') continue
-      const rigPath = join(TOWN_ROOT, name)
-      try {
-        const stat = execSync(`test -d "${rigPath}" && echo "dir" || echo "file"`, {
-          encoding: 'utf-8'
-        }).trim()
-        if (stat === 'dir') {
-          rigs.push({ name, path: rigPath })
-        }
-      } catch (e) {
-        // Skip
+      if (name.startsWith('.')) continue
+      const polecatsPath = join(TOWN_ROOT, name, 'polecats')
+      if (existsSync(polecatsPath)) {
+        rigs.push({ name, path: join(TOWN_ROOT, name) })
       }
     }
     return rigs
@@ -491,9 +484,9 @@ app.post('/api/rigs', (req, res) => {
     return res.status(400).json({ error: 'Rig name required' })
   }
 
-  // Validate name (alphanumeric, dashes, underscores only)
-  if (!/^[a-zA-Z0-9_-]+$/.test(name)) {
-    return res.status(400).json({ error: 'Invalid rig name. Use alphanumeric, dashes, or underscores.' })
+  // Validate name — gt rejects hyphens, dots, and spaces (reserved for agent ID parsing)
+  if (!/^[a-zA-Z0-9_]+$/.test(name)) {
+    return res.status(400).json({ error: 'Invalid rig name. Use alphanumeric or underscores only (no hyphens, dots, or spaces).' })
   }
 
   try {
@@ -742,22 +735,61 @@ app.post('/api/sling', (req, res) => {
   }
   writeFileSync(statusPath, JSON.stringify(status, null, 2))
 
-  // Call real gt sling to dispatch work and start a Claude session
-  // gt sling handles: session start, convoy creation, Claude invocation, task injection
-  // Escape the issue text for shell safety
-  const escapedIssue = issue.replace(/"/g, '\\"').replace(/\$/g, '\\$')
-  const slingResult = gt(`sling "${escapedIssue}" ${rigName}`)
-
-  if (slingResult === null) {
-    // gt sling failed — try starting a session directly as fallback
-    console.warn(`gt sling failed for ${rigName}, attempting gt session start as fallback`)
-    const sessionResult = gt(`session start ${rigName}/${polecatName}`)
-    if (sessionResult === null) {
-      console.error(`Both gt sling and gt session start failed for ${rigName}/${polecatName}`)
-      // Status is already written, so UI shows "working" — mark the issue
-      status.slingError = 'gt sling and session start both failed'
-      writeFileSync(statusPath, JSON.stringify(status, null, 2))
+  // Start a Claude session for the polecat
+  // gt sling expects bead IDs, so we use gt session start + tmux prompt injection
+  const sessionResult = gt(`session start ${rigName}/${polecatName}`)
+  if (sessionResult === null) {
+    console.error(`gt session start failed for ${rigName}/${polecatName}`)
+    const failedStatus = {
+      status: 'idle',
+      issue: issue,
+      slingError: 'gt session start failed',
+      failedAt: new Date().toISOString()
     }
+    writeFileSync(statusPath, JSON.stringify(failedStatus, null, 2))
+    return res.status(500).json({ error: 'Failed to start agent session' })
+  }
+
+  // Accept the bypass permissions warning and inject the task prompt
+  // gt session creates tmux sessions named {prefix}-{polecatName}
+  // We need to detect the tmux session name and send keystrokes
+  try {
+    const sessions = execSync('tmux list-sessions -F "#{session_name}"', {
+      encoding: 'utf-8', timeout: 5000, shell: true
+    }).trim().split('\n')
+    const tmuxSession = sessions.find(s => s.includes(polecatName))
+    if (tmuxSession) {
+      // Wait for Claude to render the bypass warning
+      setTimeout(() => {
+        try {
+          // Press Down to select "Yes, I accept", then Enter
+          execSync(`tmux send-keys -t "${tmuxSession}" Down`, { timeout: 3000, shell: true })
+          setTimeout(() => {
+            try {
+              execSync(`tmux send-keys -t "${tmuxSession}" Enter`, { timeout: 3000, shell: true })
+              // Wait for Claude to initialize, then type the task
+              setTimeout(() => {
+                try {
+                  const escaped = issue.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\$/g, '\\$').replace(/`/g, '\\`')
+                  execSync(`tmux send-keys -t "${tmuxSession}" "${escaped}" Enter`, { timeout: 5000, shell: true })
+                  console.log(`Injected task into ${tmuxSession}: ${issue}`)
+                } catch (e) {
+                  console.error(`Failed to inject task into ${tmuxSession}:`, e.message)
+                }
+              }, 5000)
+            } catch (e) {
+              console.error(`Failed to send Enter to ${tmuxSession}:`, e.message)
+            }
+          }, 500)
+        } catch (e) {
+          console.error(`Failed to send Down to ${tmuxSession}:`, e.message)
+        }
+      }, 2000)
+    } else {
+      console.warn(`Could not find tmux session for ${polecatName}`)
+    }
+  } catch (e) {
+    console.warn('Could not list tmux sessions:', e.message)
   }
 
   // Broadcast status update
@@ -1982,6 +2014,11 @@ app.post('/api/templates/:id/create', async (req, res) => {
     return res.status(400).json({ error: 'Project name required' })
   }
 
+  // Validate name — gt rejects hyphens, dots, and spaces
+  if (!/^[a-zA-Z0-9_]+$/.test(projectName)) {
+    return res.status(400).json({ error: 'Invalid project name. Use alphanumeric or underscores only (no hyphens, dots, or spaces).' })
+  }
+
   try {
     // Create the rig
     const rigPath = join(TOWN_ROOT, projectName)
@@ -2012,6 +2049,9 @@ app.post('/api/templates/:id/create', async (req, res) => {
       }, null, 2))
       polecats.push(pcName)
     }
+
+    // Register as a gt rig so sling/sessions work
+    gt(`rig add ${projectName} --adopt --force`)
 
     addActivityEvent('project_from_template', {
       project: projectName,

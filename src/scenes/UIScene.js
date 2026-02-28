@@ -1589,14 +1589,37 @@ export class UIScene extends Phaser.Scene {
     this.selectedUnit = null
     this.selectedBuilding = building
 
+    // Compute dynamic card height based on button count
+    const buttonCount = building.type === 'building-rig' ? 3 : 2
+    const baseHeight = 165  // header + avatar + name + badge
+    const buttonsHeight = buttonCount * 50
+    const cardHeight = baseHeight + buttonsHeight + 25  // 25px bottom padding
+
+    // Redraw card background and re-center
+    this._redrawCardBg(cardHeight)
+    const screenWidth = this.cameras.main.width
+    const screenHeight = this.cameras.main.height
+    const centerX = (screenWidth - this._cardWidth) / 2
+    const centerY = (screenHeight - cardHeight) / 2
+    this.selectionCard.setPosition(centerX, centerY)
+
+    // Clear previous progress info if any
+    if (this.cardProgressContainer) {
+      this.cardProgressContainer.destroy()
+      this.cardProgressContainer = null
+    }
+
+    // Reset button position (no progress section for buildings)
+    this.cardButtons.setY(165)
+
     // Animated entry
-    this.selectionCard.setX(-200)
+    this.selectionCard.setScale(0.8)
     this.selectionCard.setAlpha(0)
     this.tweens.add({
       targets: this.selectionCard,
-      x: 20,
+      scale: 1,
       alpha: 1,
-      duration: 250,
+      duration: 200,
       ease: 'Back.easeOut'
     })
 
@@ -1700,7 +1723,7 @@ export class UIScene extends Phaser.Scene {
   }
 
   async executeBuildingCommand(action, building) {
-    const rigName = building.name
+    const rigName = building.rig || building.name
 
     switch(action) {
       case 'spawn':
@@ -2818,7 +2841,7 @@ export class UIScene extends Phaser.Scene {
 
     // Handle state-based responses
     if (this.mayorState === 'awaiting_project_name') {
-      const name = text.replace(/[^a-zA-Z0-9_-]/g, '-').toLowerCase()
+      const name = text.replace(/[^a-zA-Z0-9_]/g, '_').toLowerCase()
       this.addMayorMessage('mayor', `Creating project "${name}"...`)
       try {
         await this.api.createRig(name)
@@ -2844,7 +2867,7 @@ export class UIScene extends Phaser.Scene {
     }
 
     if (this.mayorState === 'awaiting_clone_name') {
-      const name = text.replace(/[^a-zA-Z0-9_-]/g, '-').toLowerCase()
+      const name = text.replace(/[^a-zA-Z0-9_]/g, '_').toLowerCase()
       this.addMayorMessage('mayor', `Creating "${name}" and cloning the repo...`)
       try {
         await this.api.createRig(name)
@@ -2975,7 +2998,7 @@ export class UIScene extends Phaser.Scene {
     if (projects.length === 0) {
       this.addMayorMessage('mayor', `No projects yet - creating one...`)
       try {
-        const projectName = 'my-project'
+        const projectName = 'my_project'
         await this.api.createRig(projectName)
         if (this.gameScene) {
           this.gameScene.addVillage(projectName)
@@ -3299,7 +3322,15 @@ export class UIScene extends Phaser.Scene {
       const width = this.cameras.main.width
       const height = this.cameras.main.height
       const modalWidth = 380
-      const modalHeight = options.inputType ? 240 : 180
+      // Estimate message height: wrap at modalWidth-40, ~18px per line
+      const avgCharsPerLine = Math.floor((modalWidth - 40) / 8)
+      const messageLines = message ? message.split('\n').reduce((count, line) => {
+        return count + Math.max(1, Math.ceil((line.length || 1) / avgCharsPerLine))
+      }, 0) : 1
+      const messageHeight = messageLines * 18
+      const baseHeight = 55 + 20 + messageHeight + 55 // header + gap + message + buttons area
+      const inputExtra = options.inputType ? 55 : 0
+      const modalHeight = Math.max(options.inputType ? 240 : 180, baseHeight + inputExtra)
 
       // Modal container
       this.modal = this.add.container(width/2, height/2)
@@ -3568,7 +3599,7 @@ export class UIScene extends Phaser.Scene {
       title: 'NEW PROJECT',
       message: 'Step 1/3: Enter a name for your project rig',
       inputType: 'text',
-      placeholder: 'e.g., my-project'
+      placeholder: 'e.g., my_project'
     })
     if (!rigName) return
 
@@ -3590,6 +3621,9 @@ export class UIScene extends Phaser.Scene {
   }
 
   async createProject(rigName, repoUrl, issueId) {
+    // Sanitize: gt rejects hyphens, dots, and spaces in rig names
+    rigName = rigName.replace(/[^a-zA-Z0-9_]/g, '_').toLowerCase()
+
     try {
       // Show loading state
       this.statusText.setText('Creating project...')
@@ -4176,7 +4210,7 @@ export class UIScene extends Phaser.Scene {
       title: 'PROJECT',
       message: 'Which project? (Leave blank for default)',
       inputType: 'text',
-      placeholder: 'project-name'
+      placeholder: 'project_name'
     })
 
     try {
@@ -5423,21 +5457,22 @@ export class UIScene extends Phaser.Scene {
       title: 'PROJECT NAME',
       message: `Create project from "${template.name}"`,
       inputType: 'text',
-      placeholder: 'my-new-project'
+      placeholder: 'my_new_project'
     })
     if (!projectName) return
+    const sanitizedName = projectName.replace(/[^a-zA-Z0-9_]/g, '_').toLowerCase()
 
     try {
       this.statusText.setText('Creating project...')
-      const result = await this.api.createFromTemplate(template.id, projectName)
+      const result = await this.api.createFromTemplate(template.id, sanitizedName)
       this.statusText.setText('Project created!')
 
       if (this.gameScene) {
-        this.gameScene.addBuilding(`rig-${projectName}`, projectName, 14, 8, 'building-rig')
+        this.gameScene.addBuilding(`rig-${sanitizedName}`, sanitizedName, 14, 8, 'building-rig')
         this.gameScene.refreshState()
       }
 
-      this.showNotification('success', 'Project Created', `${projectName} created from template`)
+      this.showNotification('success', 'Project Created', `${sanitizedName} created from template`)
     } catch (e) {
       this.statusText.setText('Failed')
       this.showNotification('error', 'Failed', e.message)

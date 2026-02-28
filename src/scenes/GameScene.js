@@ -671,8 +671,8 @@ export class GameScene extends Phaser.Scene {
     this.villages.push(village)
 
     if (isHub) {
-      // Central hub with Mayor HQ
-      this.addBuilding('townhall', 'Mayor HQ', centerX, centerY, 'building-townhall')
+      // Central hub — these are Gas Town system buildings (decorative)
+      this.addBuilding('townhall', 'Town Center', centerX, centerY, 'building-townhall')
       this.addBuilding('refinery', 'Refinery', centerX - 3, centerY - 2, 'building-refinery')
       this.addBuilding('barracks', 'Barracks', centerX - 2, centerY + 2, 'building-barracks')
 
@@ -769,7 +769,7 @@ export class GameScene extends Phaser.Scene {
 
     // Add rigs as villages around the hub
     if (state.rigs && state.rigs.length > 0) {
-      // Filter out special rigs that are part of the hub
+      // Filter out Gas Town system rigs that are part of the hub
       const hubRigs = ['mayor', 'deacon', 'refinery']
       const projectRigs = state.rigs.filter(r => !hubRigs.includes(r.name))
 
@@ -823,7 +823,7 @@ export class GameScene extends Phaser.Scene {
     this.events.emit('villageAdded', this.villages[0])
   }
 
-  addBuilding(id, name, gridX, gridY, spriteKey) {
+  addBuilding(id, name, gridX, gridY, spriteKey, rig = null) {
     const { x, y } = this.gridToIso(gridX, gridY)
 
     const building = this.add.image(x, y, spriteKey)
@@ -871,7 +871,7 @@ export class GameScene extends Phaser.Scene {
         duration: 50,
         yoyo: true
       })
-      this.events.emit('buildingClicked', { id, name, type: spriteKey })
+      this.events.emit('buildingClicked', { id, name, type: spriteKey, rig: rig || name })
     })
 
     this.buildingLayer.add(building)
