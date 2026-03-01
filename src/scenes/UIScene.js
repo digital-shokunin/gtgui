@@ -1589,11 +1589,16 @@ export class UIScene extends Phaser.Scene {
     this.selectedUnit = null
     this.selectedBuilding = building
 
+    // Prevent accidental button clicks from the same pointer event that opened the card
+    this._cardClickGuard = true
+    this.time.delayedCall(300, () => { this._cardClickGuard = false })
+
     // Compute dynamic card height based on button count
-    const buttonCount = building.type === 'building-rig' ? 3 : 2
-    const baseHeight = 165  // header + avatar + name + badge
+    const buttonCount = building.type === 'building-rig' ? 4 :
+                         building.type === 'building-barracks' ? 1 : 0
+    const baseHeight = 180  // header + avatar + name + badge (extra padding for descenders)
     const buttonsHeight = buttonCount * 50
-    const cardHeight = baseHeight + buttonsHeight + 25  // 25px bottom padding
+    const cardHeight = baseHeight + buttonsHeight + 60  // bottom padding for shadows/hover
 
     // Redraw card background and re-center
     this._redrawCardBg(cardHeight)
@@ -1610,7 +1615,7 @@ export class UIScene extends Phaser.Scene {
     }
 
     // Reset button position (no progress section for buildings)
-    this.cardButtons.setY(165)
+    this.cardButtons.setY(180)
 
     // Animated entry
     this.selectionCard.setScale(0.8)
@@ -1637,15 +1642,16 @@ export class UIScene extends Phaser.Scene {
     // Update name
     this.cardName.setText(building.name)
 
-    // Status for building
+    // Status for building (Y pushed down 15px to clear descenders in name)
     this.cardStatusBg.clear()
     this.cardStatusBg.fillStyle(0x6B3510, 1)
-    this.cardStatusBg.fillRoundedRect(55, 130, 100, 24, 12)
+    this.cardStatusBg.fillRoundedRect(55, 145, 100, 24, 12)
     this.cardStatusBg.fillStyle(0x8B4513, 1)
-    this.cardStatusBg.fillRoundedRect(55, 128, 100, 22, 11)
+    this.cardStatusBg.fillRoundedRect(55, 143, 100, 22, 11)
     this.cardStatusBg.fillStyle(0xFFFFFF, 0.25)
-    this.cardStatusBg.fillRoundedRect(58, 130, 94, 8, { tl: 8, tr: 8, bl: 0, br: 0 })
+    this.cardStatusBg.fillRoundedRect(58, 145, 94, 8, { tl: 8, tr: 8, bl: 0, br: 0 })
     this.cardStatus.setText('BUILDING')
+    this.cardStatus.setY(147)
 
     // Building-specific buttons
     this.createBuildingButtons(building)
@@ -1659,14 +1665,24 @@ export class UIScene extends Phaser.Scene {
     const buttonWidth = 196
     const buttonHeight = 40
 
-    const buttons = [
-      { label: 'SPAWN POLECAT', action: 'spawn', color: 0x2ECC71 },
-      { label: 'VIEW POLECATS', action: 'list', color: 0x3498DB }
-    ]
-
-    // Add clone button for rigs
-    if (building.type === 'building-rig') {
-      buttons.push({ label: 'CLONE REPO', action: 'clone', color: 0x9B59B6 })
+    // Hub buildings get role-appropriate buttons (not rig controls)
+    let buttons = []
+    if (building.type === 'building-townhall') {
+      // Gas Town HQ: informational only — Mayor penguin handles interaction
+      return
+    } else if (building.type === 'building-barracks') {
+      // Barracks: polecat spawning hub — view all polecats across rigs
+      buttons = [
+        { label: 'VIEW ALL POLECATS', action: 'listAll', color: 0x3498DB }
+      ]
+    } else {
+      // Rig buildings: full rig controls
+      buttons = [
+        { label: 'SPAWN POLECAT', action: 'spawn', color: 0x2ECC71 },
+        { label: 'VIEW POLECATS', action: 'list', color: 0x3498DB },
+        { label: 'CLONE REPO', action: 'clone', color: 0x9B59B6 },
+        { label: 'REMOVE RIG', action: 'remove', color: 0xE74C3C }
+      ]
     }
 
     buttons.forEach((btn, i) => {
@@ -1715,7 +1731,9 @@ export class UIScene extends Phaser.Scene {
       zone.on('pointerup', () => {
         drawButton(false, true)
         text.setY(y + buttonHeight/2 - 1)
-        this.executeBuildingCommand(btn.action, building)
+        if (!this._cardClickGuard) {
+          this.executeBuildingCommand(btn.action, building)
+        }
       })
 
       this.cardButtons.add([bg, text, zone])
@@ -1786,6 +1804,53 @@ export class UIScene extends Phaser.Scene {
             this.statusText.setText('Clone failed')
             await this.showModal({
               title: 'CLONE FAILED',
+              message: e.message,
+              showCancel: false
+            })
+          }
+        }
+        break
+      case 'listAll':
+        try {
+          const statusResp = await fetch('/api/status')
+          const statusData = await statusResp.json()
+          const allPolecats = statusData.polecats || []
+          const list = allPolecats.length > 0
+            ? allPolecats.map(p => `• ${p.name} [${p.rig}] (${p.status})`).join('\n')
+            : 'No polecats deployed across any rig'
+          await this.showModal({
+            title: 'ALL POLECATS',
+            message: list,
+            showCancel: false
+          })
+        } catch(e) {
+          await this.showModal({
+            title: 'ERROR',
+            message: e.message,
+            showCancel: false
+          })
+        }
+        break
+      case 'remove':
+        const confirmed = await this.showModal({
+          title: 'REMOVE RIG',
+          message: `Remove "${rigName}" from Gas Town? This unregisters the rig and kills any running sessions. Files on disk are NOT deleted.`,
+        })
+        if (confirmed) {
+          try {
+            this.statusText.setText('Removing rig...')
+            const resp = await fetch(`/api/rigs/${encodeURIComponent(rigName)}`, { method: 'DELETE' })
+            const data = await resp.json()
+            if (!resp.ok) throw new Error(data.error)
+            this.hideSelectionCard()
+            this.statusText.setText(`Removed: ${rigName}`)
+            if (this.gameScene) this.gameScene.refreshState()
+            // Reload to clear the village from the map
+            this.time.delayedCall(500, () => location.reload())
+          } catch(e) {
+            this.statusText.setText('Remove failed')
+            await this.showModal({
+              title: 'REMOVE FAILED',
               message: e.message,
               showCancel: false
             })
@@ -3136,7 +3201,7 @@ export class UIScene extends Phaser.Scene {
     this.villageNav.add(this.villageNavBg)
 
     // Title
-    this.villageNavTitle = this.add.text(width/2, 12, 'VILLAGES', {
+    this.villageNavTitle = this.add.text(width/2, 12, 'VILLAGE', {
       font: 'bold 12px Fredoka',
       fill: '#FFFFFF',
       stroke: '#005588',
@@ -3200,8 +3265,9 @@ export class UIScene extends Phaser.Scene {
         fill: '#FFFFFF'
       }).setOrigin(0.5)
 
-      // Polecat count
-      const count = this.add.text(width - 20, y + buttonHeight/2 - 1, `${village.polecats?.length || 0}`, {
+      // Agent count — hub shows Mayor + Deacon (2), rigs show polecats
+      const agentCount = village.isHub ? 2 : (village.polecats?.length || 0)
+      const count = this.add.text(width - 20, y + buttonHeight/2 - 1, `${agentCount}`, {
         font: '10px Fredoka',
         fill: '#FFFFFF',
         backgroundColor: '#00000033',
