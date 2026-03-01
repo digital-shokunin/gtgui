@@ -661,28 +661,35 @@ app.get('/api/rigs/:name/polecats', (req, res) => {
   res.json(polecats)
 })
 
-// DELETE /api/rigs/:name - Delete a rig (for testing cleanup)
+// DELETE /api/rigs/:name - Remove a rig
 app.delete('/api/rigs/:name', (req, res) => {
   const { name } = req.params
-
-  // Safety check - only allow deletion of test rigs
-  if (!name.startsWith('test-')) {
-    return res.status(403).json({ error: 'Can only delete test rigs (prefix: test-)' })
-  }
+  const deleteFiles = req.query.deleteFiles === 'true'
 
   const rigPath = join(TOWN_ROOT, name)
 
+  if (!existsSync(rigPath)) {
+    return res.status(404).json({ error: 'Rig not found' })
+  }
+
   try {
-    if (existsSync(rigPath)) {
-      execSync(`rm -rf "${rigPath}"`, { encoding: 'utf-8', shell: true })
-      multiplayer.broadcastStateUpdate({ event: 'rig:deleted', rig: name })
-      res.json({ success: true, deleted: name })
-    } else {
-      res.status(404).json({ error: 'Rig not found' })
+    // Unregister from Gas Town (kills sessions with --force)
+    try {
+      gt(`rig remove ${name} --force`)
+    } catch (e) {
+      console.warn(`gt rig remove warning: ${e.message}`)
     }
+
+    // Optionally delete files on disk
+    if (deleteFiles) {
+      execSync(`rm -rf "${rigPath}"`, { encoding: 'utf-8', shell: true })
+    }
+
+    multiplayer.broadcastStateUpdate({ event: 'rig:deleted', rig: name })
+    res.json({ success: true, deleted: name, filesDeleted: deleteFiles })
   } catch (e) {
-    console.error('Failed to delete rig:', e.message)
-    res.status(500).json({ error: 'Failed to delete rig' })
+    console.error('Failed to remove rig:', e.message)
+    res.status(500).json({ error: 'Failed to remove rig' })
   }
 })
 

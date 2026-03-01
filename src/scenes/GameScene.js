@@ -34,6 +34,11 @@ export class GameScene extends Phaser.Scene {
     // Create isometric map
     this.createMap()
 
+    // Center camera on map after createMap() has set mapLayer offsets
+    const mapCenterX = this.mapLayer.x
+    const mapCenterY = this.mapLayer.y + this.mapHeight * this.tileHeight / 2
+    this.cameras.main.centerOn(mapCenterX, mapCenterY)
+
     // Add hidden Easter egg - Endurance shipwreck
     this.createEnduranceWreck()
 
@@ -347,10 +352,10 @@ export class GameScene extends Phaser.Scene {
     this.edgeScrollMargin = 50
     this.edgeScrollSpeed = 8
 
-    // Center camera on town
-    const centerX = this.mapWidth * this.tileWidth / 2
-    const centerY = this.mapHeight * this.tileHeight / 2
-    this.cameras.main.centerOn(centerX, centerY)
+    // Track whether mouse is inside the game canvas
+    this.mouseInGame = true
+    this.input.on('gameout', () => { this.mouseInGame = false })
+    this.input.on('gameover', () => { this.mouseInGame = true })
   }
 
   createMap() {
@@ -671,12 +676,10 @@ export class GameScene extends Phaser.Scene {
     this.villages.push(village)
 
     if (isHub) {
-      // Central hub — these are Gas Town system buildings (decorative)
-      this.addBuilding('townhall', 'Town Center', centerX, centerY, 'building-townhall')
-      this.addBuilding('refinery', 'Refinery', centerX - 3, centerY - 2, 'building-refinery')
-      this.addBuilding('barracks', 'Barracks', centerX - 2, centerY + 2, 'building-barracks')
+      // Central hub — Gas Town HQ with Mayor and Deacon agents
+      this.addBuilding('townhall', 'Gas Town HQ', centerX, centerY, 'building-townhall')
 
-      // Mayor (special click handler)
+      // Mayor — global orchestrator (special click handler)
       const mayor = this.addUnit('mayor', 'Mayor', centerX, centerY - 1, 'unit-mayor', 'idle')
       if (mayor) {
         mayor.sprite.on('pointerdown', () => {
@@ -684,8 +687,11 @@ export class GameScene extends Phaser.Scene {
         })
       }
 
+      // Deacon — town watchdog
       this.addUnit('deacon', 'Deacon', centerX - 1, centerY, 'unit-deacon', 'idle')
-      this.addUnit('refinery-agent', 'Refinery', centerX - 3, centerY - 1, 'unit-refinery', 'idle')
+
+      // Barracks — hub building (decorative)
+      this.addBuilding('barracks', 'Barracks', centerX + 2, centerY + 1, 'building-barracks')
     } else {
       // Project village
       const rigId = `rig-${name.toLowerCase().replace(/[^a-z0-9]/g, '-')}`
@@ -769,9 +775,9 @@ export class GameScene extends Phaser.Scene {
 
     // Add rigs as villages around the hub
     if (state.rigs && state.rigs.length > 0) {
-      // Filter out Gas Town system rigs that are part of the hub
-      const hubRigs = ['mayor', 'deacon', 'refinery']
-      const projectRigs = state.rigs.filter(r => !hubRigs.includes(r.name))
+      // All rigs are project buildings — mayor/deacon/refinery are system dirs
+      // already filtered server-side (they don't have polecats/)
+      const projectRigs = state.rigs
 
       projectRigs.forEach((rig, i) => {
         // Position in a circle around the hub
@@ -1153,21 +1159,23 @@ export class GameScene extends Phaser.Scene {
       }
     }
 
-    // Edge scrolling - pan when mouse near screen edges
-    const pointer = this.input.activePointer
-    const margin = this.edgeScrollMargin || 50
-    const speed = (this.edgeScrollSpeed || 8) / this.cameras.main.zoom
+    // Edge scrolling - pan when mouse near screen edges (only when mouse is inside canvas)
+    if (this.mouseInGame) {
+      const pointer = this.input.activePointer
+      const margin = this.edgeScrollMargin || 50
+      const speed = (this.edgeScrollSpeed || 8) / this.cameras.main.zoom
 
-    if (pointer.x < margin) {
-      this.cameras.main.scrollX -= speed
-    } else if (pointer.x > this.cameras.main.width - margin) {
-      this.cameras.main.scrollX += speed
-    }
+      if (pointer.x < margin) {
+        this.cameras.main.scrollX -= speed
+      } else if (pointer.x > this.cameras.main.width - margin) {
+        this.cameras.main.scrollX += speed
+      }
 
-    if (pointer.y < margin) {
-      this.cameras.main.scrollY -= speed
-    } else if (pointer.y > this.cameras.main.height - margin) {
-      this.cameras.main.scrollY += speed
+      if (pointer.y < margin) {
+        this.cameras.main.scrollY -= speed
+      } else if (pointer.y > this.cameras.main.height - margin) {
+        this.cameras.main.scrollY += speed
+      }
     }
   }
 
@@ -1184,10 +1192,14 @@ export class GameScene extends Phaser.Scene {
         warningTimeThreshold: 1440000
       }
 
-      // Update unit states
+      // Update unit states (and add new polecats that don't exist yet)
       if (state.polecats) {
         state.polecats.forEach(pc => {
-          const unit = this.units.get(`polecat-${pc.name}`)
+          let unit = this.units.get(`polecat-${pc.name}`)
+          if (!unit) {
+            // New polecat — add it to the appropriate village
+            unit = this.addPolecatToVillage(pc.rig, pc.name)
+          }
           if (unit) {
             const oldStatus = unit.status
             unit.status = pc.status
