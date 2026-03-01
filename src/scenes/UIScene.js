@@ -1045,10 +1045,14 @@ export class UIScene extends Phaser.Scene {
   }
 
   createMinimap() {
-    const minimapSize = 160
+    this.minimapSize = 160
     const padding = 15
-    const x = this.cameras.main.width - minimapSize - padding
-    const y = this.cameras.main.height - minimapSize - padding
+    this.minimapX = this.cameras.main.width - this.minimapSize - padding
+    this.minimapY = this.cameras.main.height - this.minimapSize - padding
+
+    const x = this.minimapX
+    const y = this.minimapY
+    const minimapSize = this.minimapSize
 
     // Minimap frame - glossy style
     this.minimapBg = this.add.graphics()
@@ -1073,40 +1077,14 @@ export class UIScene extends Phaser.Scene {
       )
     }
 
-    // Buildings on minimap (colorful dots with glow)
+    // Buildings on minimap — will be redrawn dynamically from game buildings
     this.minimapMarkers = this.add.graphics()
-    // Ski lodge
-    this.minimapMarkers.fillStyle(0x8B4513, 0.3)
-    this.minimapMarkers.fillCircle(x + 80, y + 80, 10)
-    this.minimapMarkers.fillStyle(0x8B4513, 1)
-    this.minimapMarkers.fillCircle(x + 80, y + 80, 6)
-    // Coffee shop
-    this.minimapMarkers.fillStyle(0xD2691E, 0.3)
-    this.minimapMarkers.fillCircle(x + 50, y + 60, 8)
-    this.minimapMarkers.fillStyle(0xD2691E, 1)
-    this.minimapMarkers.fillCircle(x + 50, y + 60, 5)
-    // Pet shop
-    this.minimapMarkers.fillStyle(0x9B59B6, 0.3)
-    this.minimapMarkers.fillCircle(x + 110, y + 100, 8)
-    this.minimapMarkers.fillStyle(0x9B59B6, 1)
-    this.minimapMarkers.fillCircle(x + 110, y + 100, 5)
-    // Igloo
-    this.minimapMarkers.fillStyle(0xFFFFFF, 0.5)
-    this.minimapMarkers.fillCircle(x + 130, y + 50, 8)
-    this.minimapMarkers.fillStyle(0xFFFFFF, 1)
-    this.minimapMarkers.fillCircle(x + 130, y + 50, 5)
-    this.minimapMarkers.lineStyle(1, 0x87CEEB, 1)
-    this.minimapMarkers.strokeCircle(x + 130, y + 50, 5)
 
-    // Viewport indicator with glow
+    // Viewport indicator (redrawn each frame in update())
     this.viewportIndicator = this.add.graphics()
-    this.viewportIndicator.fillStyle(0xFF6B35, 0.2)
-    this.viewportIndicator.fillRoundedRect(x + 50, y + 50, 50, 40, 4)
-    this.viewportIndicator.lineStyle(2, 0xFF6B35, 0.9)
-    this.viewportIndicator.strokeRoundedRect(x + 50, y + 50, 50, 40, 4)
 
     // Label with icon
-    this.add.text(x + minimapSize/2, y - 18, 'MAP', {
+    this.minimapLabel = this.add.text(x + minimapSize/2, y - 18, 'MAP', {
       font: 'bold 15px Fredoka',
       fill: '#FFFFFF',
       stroke: '#005588',
@@ -3184,6 +3162,67 @@ export class UIScene extends Phaser.Scene {
 
     if (this.settingsBtn) {
       this.settingsBtn.setPosition(width - 210, 33)
+    }
+
+    // Cost dashboard — top-right
+    if (this.costDashboard) {
+      this.costDashboard.setX(width - 50)
+    }
+
+    // GitHub PR panel — top-right
+    if (this.githubPanel) {
+      this.githubPanel.setX(width - 100)
+    }
+
+    // Notification container — top-right
+    if (this.notificationContainer) {
+      this.notificationContainer.setX(width - 320)
+    }
+
+    // Village navigator — bottom-left
+    if (this.villageNav) {
+      this.villageNav.setY(height - 200)
+    }
+
+    // New project button — bottom-left
+    if (this.newProjectBtn) {
+      this.newProjectBtn.setY(height - 65)
+    }
+
+    // Task queue — bottom-center
+    if (this.taskQueue) {
+      this.taskQueue.setY(height - 40)
+    }
+
+    // Minimap — bottom-right (requires redraw since graphics use absolute coords)
+    if (this.minimapBg) {
+      const padding = 15
+      const minimapSize = this.minimapSize
+      this.minimapX = width - minimapSize - padding
+      this.minimapY = height - minimapSize - padding
+      const x = this.minimapX
+      const y = this.minimapY
+
+      this.minimapBg.clear()
+      this.drawGlossyPanel(this.minimapBg, x - 10, y - 30, minimapSize + 20, minimapSize + 40, 0x0077B6, 14)
+
+      this.minimap.clear()
+      this.minimap.fillStyle(0x5BA3C6, 0.5)
+      this.minimap.fillRoundedRect(x + 2, y + 2, minimapSize - 4, minimapSize - 4, 8)
+      this.minimap.fillStyle(0xE8F4FC, 1)
+      this.minimap.fillRoundedRect(x, y, minimapSize, minimapSize, 8)
+      this.minimap.fillStyle(0xFFFFFF, 0.6)
+      for (let i = 0; i < 30; i++) {
+        this.minimap.fillCircle(
+          x + Math.random() * minimapSize,
+          y + Math.random() * minimapSize,
+          1.5
+        )
+      }
+
+      if (this.minimapLabel) {
+        this.minimapLabel.setPosition(x + minimapSize / 2, y - 18)
+      }
     }
   }
 
@@ -5702,6 +5741,64 @@ This is one of history's greatest survival stories.`
       duration: 300,
       ease: 'Back.easeOut'
     })
+  }
+
+  update() {
+    if (!this.gameScene || !this.viewportIndicator) return
+
+    const cam = this.gameScene.cameras.main
+    const gs = this.gameScene
+
+    // World extent: full isometric map area offset by mapLayer position
+    const worldWidth = gs.mapWidth * gs.tileWidth   // 5120
+    const worldHeight = gs.mapHeight * gs.tileHeight // 2560
+    const mapOffsetX = gs.mapLayer ? gs.mapLayer.x : 0
+    const mapOffsetY = gs.mapLayer ? gs.mapLayer.y : 0
+
+    // Uniform scale: fit the larger axis (width) to the minimap, center the shorter axis
+    const scale = this.minimapSize / worldWidth
+    const mapContentH = worldHeight * scale          // 80px in a 160px minimap
+    const yPad = (this.minimapSize - mapContentH) / 2 // 40px vertical padding
+
+    // Map world coords → minimap coords (uniform scale, centered vertically)
+    const vpW = (cam.width / cam.zoom) * scale
+    const vpH = (cam.height / cam.zoom) * scale
+    const vpX = this.minimapX + (cam.scrollX - mapOffsetX + worldWidth / 2) * scale
+    const vpY = this.minimapY + yPad + (cam.scrollY - mapOffsetY) * scale
+
+    // Clamp to minimap bounds
+    const clampedX = Math.max(this.minimapX, Math.min(vpX, this.minimapX + this.minimapSize - vpW))
+    const clampedY = Math.max(this.minimapY, Math.min(vpY, this.minimapY + this.minimapSize - vpH))
+    const clampedW = Math.min(vpW, this.minimapSize)
+    const clampedH = Math.min(vpH, this.minimapSize)
+
+    this.viewportIndicator.clear()
+    this.viewportIndicator.fillStyle(0xFF6B35, 0.2)
+    this.viewportIndicator.fillRoundedRect(clampedX, clampedY, clampedW, clampedH, 4)
+    this.viewportIndicator.lineStyle(2, 0xFF6B35, 0.9)
+    this.viewportIndicator.strokeRoundedRect(clampedX, clampedY, clampedW, clampedH, 4)
+
+    // Redraw building markers from actual game buildings
+    this.minimapMarkers.clear()
+    if (gs.buildings) {
+      gs.buildings.forEach(building => {
+        // Convert building world position to minimap coordinates (same uniform scale)
+        const bx = this.minimapX + (building.x - mapOffsetX + worldWidth / 2) * scale
+        const by = this.minimapY + yPad + (building.y - mapOffsetY) * scale
+
+        // Only draw if within minimap bounds
+        if (bx >= this.minimapX && bx <= this.minimapX + this.minimapSize &&
+            by >= this.minimapY && by <= this.minimapY + this.minimapSize) {
+          // Color by building type
+          const color = building.id?.startsWith('rig-') ? 0x9B59B6 :
+                        building.id === 'townhall' ? 0x8B4513 : 0xD2691E
+          this.minimapMarkers.fillStyle(color, 0.3)
+          this.minimapMarkers.fillCircle(bx, by, 6)
+          this.minimapMarkers.fillStyle(color, 1)
+          this.minimapMarkers.fillCircle(bx, by, 4)
+        }
+      })
+    }
   }
 
 }
