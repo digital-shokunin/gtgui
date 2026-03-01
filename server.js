@@ -413,18 +413,22 @@ function gtJson(args, cwd = TOWN_ROOT) {
 // Helper to list rigs from directory
 function listRigs() {
   try {
+    // Get registered rigs from gt (source of truth)
+    const registered = gtJson('rig list') || []
+    const registeredNames = new Set(registered.map(r => r.name))
+
     const dirs = execSync(`ls -1 "${TOWN_ROOT}" 2>/dev/null || true`, {
       encoding: 'utf-8'
     }).trim()
 
     if (!dirs) return []
 
-    // Only include directories that have a polecats/ subdirectory (actual rigs)
+    // Only include directories that have a polecats/ subdirectory AND are registered with gt
     const rigs = []
     for (const name of dirs.split('\n').filter(Boolean)) {
       if (name.startsWith('.')) continue
       const polecatsPath = join(TOWN_ROOT, name, 'polecats')
-      if (existsSync(polecatsPath)) {
+      if (existsSync(polecatsPath) && registeredNames.has(name)) {
         rigs.push({ name, path: join(TOWN_ROOT, name) })
       }
     }

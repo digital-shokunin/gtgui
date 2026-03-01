@@ -1810,14 +1810,16 @@ export class UIScene extends Phaser.Scene {
         }
         break
       case 'remove':
-        const confirmed = await this.showModal({
+        const result = await this.showModal({
           title: 'REMOVE RIG',
-          message: `Remove "${rigName}" from Gas Town? This unregisters the rig and kills any running sessions. Files on disk are NOT deleted.`,
+          message: `Remove "${rigName}" from Gas Town? This unregisters the rig and kills any running sessions.`,
+          checkbox: 'Also delete files on disk',
         })
-        if (confirmed) {
+        if (result && result.confirmed) {
           try {
             this.statusText.setText('Removing rig...')
-            const resp = await fetch(`/api/rigs/${encodeURIComponent(rigName)}`, { method: 'DELETE' })
+            const deleteParam = result.checked ? '?deleteFiles=true' : ''
+            const resp = await fetch(`/api/rigs/${encodeURIComponent(rigName)}${deleteParam}`, { method: 'DELETE' })
             const data = await resp.json()
             if (!resp.ok) throw new Error(data.error)
             this.hideSelectionCard()
@@ -3435,7 +3437,8 @@ export class UIScene extends Phaser.Scene {
       const messageHeight = messageLines * 18
       const baseHeight = 55 + 20 + messageHeight + 55 // header + gap + message + buttons area
       const inputExtra = options.inputType ? 55 : 0
-      const modalHeight = Math.max(options.inputType ? 240 : 180, baseHeight + inputExtra)
+      const checkboxExtra = options.checkbox ? 35 : 0
+      const modalHeight = Math.max(options.inputType ? 240 : 180, baseHeight + inputExtra + checkboxExtra)
 
       // Modal container
       this.modal = this.add.container(width/2, height/2)
@@ -3539,6 +3542,33 @@ export class UIScene extends Phaser.Scene {
         this.modal.add([inputBg])
       }
 
+      // Checkbox if needed
+      let checkboxChecked = false
+      if (options.checkbox) {
+        const cbEl = document.createElement('label')
+        cbEl.style.cssText = `
+          position: fixed;
+          left: ${width/2 - modalWidth/2 + 28}px;
+          top: ${height/2 + modalHeight/2 - 85}px;
+          font-family: Fredoka, sans-serif;
+          font-size: 13px;
+          color: #555;
+          cursor: pointer;
+          display: flex;
+          align-items: center;
+          gap: 6px;
+          user-select: none;
+        `
+        const cbInput = document.createElement('input')
+        cbInput.type = 'checkbox'
+        cbInput.style.cssText = 'width: 16px; height: 16px; cursor: pointer;'
+        cbInput.addEventListener('change', () => { checkboxChecked = cbInput.checked })
+        cbEl.appendChild(cbInput)
+        cbEl.appendChild(document.createTextNode(options.checkbox))
+        document.body.appendChild(cbEl)
+        this.modal.checkboxEl = cbEl
+      }
+
       // Buttons
       const btnY = modalHeight/2 - 45
       const btnWidth = showCancel ? 130 : 180
@@ -3547,6 +3577,9 @@ export class UIScene extends Phaser.Scene {
       const cleanup = () => {
         if (this.modal.inputEl) {
           this.modal.inputEl.remove()
+        }
+        if (this.modal.checkboxEl) {
+          this.modal.checkboxEl.remove()
         }
         this.modal.destroy()
         this.modal = null
@@ -3573,8 +3606,10 @@ export class UIScene extends Phaser.Scene {
       })
       okZone.on('pointerup', () => {
         cleanup()
-        // Return inputValue for input modals, true for confirm modals
-        resolve(options.inputType ? inputValue : true)
+        // Return inputValue for input modals, { confirmed, checkbox } for checkbox modals, true for confirm modals
+        if (options.inputType) resolve(inputValue)
+        else if (options.checkbox) resolve({ confirmed: true, checked: checkboxChecked })
+        else resolve(true)
       })
 
       this.modal.add([okBtn, okText, okZone])
