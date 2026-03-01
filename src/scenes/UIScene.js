@@ -5436,6 +5436,10 @@ export class UIScene extends Phaser.Scene {
     const height = this.cameras.main.height
     const panelWidth = 400
     const panelHeight = 450
+    const headerHeight = 60
+    const buttonAreaHeight = 60
+    const contentTop = -panelHeight/2 + headerHeight
+    const contentHeight = panelHeight - headerHeight - buttonAreaHeight - 20
 
     const picker = this.add.container(width/2, height/2)
     picker.setDepth(1500)
@@ -5449,7 +5453,7 @@ export class UIScene extends Phaser.Scene {
     const panel = this.add.graphics()
     this.drawGlossyPanel(panel, -panelWidth/2, -panelHeight/2, panelWidth, panelHeight, 0x9B59B6, 20)
     panel.fillStyle(0xFFFFFF, 0.98)
-    panel.fillRoundedRect(-panelWidth/2 + 10, -panelHeight/2 + 60, panelWidth - 20, panelHeight - 80, 12)
+    panel.fillRoundedRect(-panelWidth/2 + 10, contentTop, panelWidth - 20, contentHeight, 12)
 
     const title = this.add.text(0, -panelHeight/2 + 30, 'PROJECT TEMPLATES', {
       font: 'bold 20px Fredoka',
@@ -5458,47 +5462,81 @@ export class UIScene extends Phaser.Scene {
       strokeThickness: 2
     }).setOrigin(0.5)
 
-    picker.add([backdrop, panel, title])
+    // Create template button — fixed at bottom of panel
+    const createBtn = this.add.graphics()
+    this.drawButton(createBtn, -panelWidth/2 + 20, panelHeight/2 - 55, panelWidth - 40, 40, 0x2ECC71, true)
+    const createText = this.add.text(0, panelHeight/2 - 35, '+ CREATE TEMPLATE', {
+      font: 'bold 14px Fredoka',
+      fill: '#FFFFFF'
+    }).setOrigin(0.5)
+    const createZone = this.add.zone(0, panelHeight/2 - 35, panelWidth - 40, 40).setInteractive({ useHandCursor: true })
+    createZone.on('pointerup', () => {
+      picker.destroy()
+      this.showCreateTemplateDialog()
+    })
+
+    picker.add([backdrop, panel, title, createBtn, createText, createZone])
+
+    // Scrollable content container for template cards
+    const contentContainer = this.add.container(0, 0)
+    picker.add(contentContainer)
+
+    // Mask to clip content to the white area
+    const maskShape = this.add.graphics()
+    maskShape.fillStyle(0xffffff)
+    maskShape.fillRect(
+      width/2 - panelWidth/2 + 10,
+      height/2 + contentTop,
+      panelWidth - 20,
+      contentHeight
+    )
+    maskShape.setVisible(false)
+    contentContainer.setMask(new Phaser.Display.Masks.GeometryMask(this, maskShape))
+    picker._maskShape = maskShape
+
+    // Clean up mask on destroy
+    const origDestroy = picker.destroy.bind(picker)
+    picker.destroy = () => {
+      maskShape.destroy()
+      origDestroy()
+    }
 
     // Load templates
     try {
       const result = await this.api.getTemplates()
-      let yPos = -panelHeight/2 + 80
+      let yPos = contentTop + 10
 
       if (result.templates.length === 0) {
-        const empty = this.add.text(0, yPos + 50, 'No templates yet\nSave a project as template to get started', {
+        const empty = this.add.text(0, contentTop + contentHeight/2, 'No templates yet\nSave a project as template to get started', {
           font: '14px Fredoka',
           fill: '#999999',
           align: 'center'
         }).setOrigin(0.5)
-        picker.add(empty)
+        contentContainer.add(empty)
       } else {
         result.templates.forEach(template => {
           const card = this.createTemplateCard(template, yPos, panelWidth, picker)
+          contentContainer.add(card)
           yPos += 75
         })
-      }
 
-      // Create template button
-      const createBtn = this.add.graphics()
-      this.drawButton(createBtn, -panelWidth/2 + 20, panelHeight/2 - 60, panelWidth - 40, 40, 0x2ECC71, true)
-      const createText = this.add.text(0, panelHeight/2 - 40, '+ CREATE TEMPLATE', {
-        font: 'bold 14px Fredoka',
-        fill: '#FFFFFF'
-      }).setOrigin(0.5)
-      const createZone = this.add.zone(0, panelHeight/2 - 40, panelWidth - 40, 40).setInteractive({ useHandCursor: true })
-      createZone.on('pointerup', () => {
-        picker.destroy()
-        this.showCreateTemplateDialog()
-      })
-      picker.add([createBtn, createText, createZone])
+        // Enable scrolling if content overflows
+        const totalContentHeight = result.templates.length * 75
+        if (totalContentHeight > contentHeight) {
+          const maxScroll = totalContentHeight - contentHeight + 10
+          this.input.on('wheel', (pointer, gameObjects, deltaX, deltaY) => {
+            if (!picker.active) return
+            contentContainer.y = Phaser.Math.Clamp(contentContainer.y - deltaY, -maxScroll, 0)
+          })
+        }
+      }
 
     } catch (e) {
       const error = this.add.text(0, 0, `Failed to load templates: ${e.message}`, {
         font: '14px Fredoka',
         fill: '#E74C3C'
       }).setOrigin(0.5)
-      picker.add(error)
+      contentContainer.add(error)
     }
 
     picker.setScale(0.8)
@@ -5551,7 +5589,6 @@ export class UIScene extends Phaser.Scene {
     })
 
     container.add([bg, name, desc, stats, useBtn, useText, useZone])
-    picker.add(container)
 
     return container
   }
