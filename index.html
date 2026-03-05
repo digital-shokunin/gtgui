@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Club Penguin Town</title>
+  <title>Club Penguin Colony</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Fredoka:wght@400;500;600;700&display=swap" rel="stylesheet">
@@ -152,8 +152,8 @@
   <div id="login-overlay">
     <div class="login-card">
       <div class="login-penguin">&#129427;</div>
-      <h1 class="login-title">Club Penguin Town</h1>
-      <p class="login-subtitle">Multiplayer Gastown Swarm</p>
+      <h1 class="login-title">Club Penguin Colony</h1>
+      <p class="login-subtitle">Multiplayer Agent Swarm</p>
 
       <div id="login-error" class="login-error"></div>
 
@@ -164,15 +164,6 @@
         Sign in with GitHub
       </a>
 
-      <div id="dev-login-section">
-        <div class="login-divider">or dev mode</div>
-
-        <div class="dev-login">
-          <input type="text" id="dev-username" placeholder="Enter username" />
-          <button onclick="devLogin()">Join</button>
-        </div>
-        <p class="dev-note">Dev mode - no GitHub required</p>
-      </div>
     </div>
   </div>
 
@@ -182,17 +173,27 @@
     // Check if already logged in, and hide dev login in production
     async function checkAuth() {
       try {
-        // Check config to hide dev login in production
         const configRes = await fetch('/api/config')
         if (configRes.ok) {
           const config = await configRes.json()
-          if (config.production) {
-            const devSection = document.getElementById('dev-login-section')
-            if (devSection) devSection.style.display = 'none'
+          if (!config.production) {
+            const loginCard = document.querySelector('.login-card')
+            const devSection = document.createElement('div')
+            devSection.id = 'dev-login-section'
+            devSection.innerHTML = `<div class="login-divider">or dev mode</div>
+              <div class="dev-login">
+                <input type="text" id="dev-username" placeholder="Enter username" />
+                <button onclick="devLogin()">Join</button>
+              </div>
+              <p class="dev-note">Dev mode - no GitHub required</p>`
+            loginCard.appendChild(devSection)
+            document.getElementById('dev-username').addEventListener('keypress', (e) => {
+              if (e.key === 'Enter') devLogin()
+            })
           }
         }
       } catch (e) {
-        // Config fetch failed, leave dev login visible as fallback
+        // Config fetch failed, don't show dev login
       }
 
       try {
@@ -245,11 +246,6 @@
     function hideLoginOverlay() {
       document.getElementById('login-overlay').classList.add('hidden')
     }
-
-    // Enter key to submit dev login
-    document.getElementById('dev-username').addEventListener('keypress', (e) => {
-      if (e.key === 'Enter') devLogin()
-    })
 
     // Check auth on load
     checkAuth()

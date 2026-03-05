@@ -45,7 +45,7 @@ export class BootScene extends Phaser.Scene {
 
     // Club Penguin Buildings (2x resolution)
     this.generateIgloo('building-rig')                         // Rig = Igloo
-    this.generateSkiLodge('building-townhall')                 // Mayor HQ = Ski Lodge
+    this.generateSkiLodge('building-townhall')                 // Colony HQ = Ski Lodge
     this.generateCoffeeShop('building-refinery')               // Refinery = Coffee Shop
     this.generatePetShop('building-barracks')                  // Barracks = Pet Shop
 
@@ -53,8 +53,7 @@ export class BootScene extends Phaser.Scene {
     this.generatePenguin('unit-polecat-idle', 0x3498DB, 'propeller')    // Blue propeller hat
     this.generatePenguin('unit-polecat-working', 0xF1C40F, 'hardhat')   // Yellow hard hat
     this.generatePenguin('unit-polecat-stuck', 0xE74C3C, 'warning')     // Red warning
-    this.generatePenguin('unit-mayor', 0xFFD700, 'crown')               // Gold crown
-    this.generatePenguin('unit-deacon', 0x9B59B6, 'wizard')             // Purple wizard hat
+    this.generatePenguin('unit-emperor', 0xFFD700, 'crown')              // Gold crown
     this.generatePenguin('unit-refinery', 0xFFFFFF, 'chef')             // Chef hat
 
     // Selection ring (icy blue - local player) - enhanced with glow

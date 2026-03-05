@@ -38,15 +38,15 @@ export class UIScene extends Phaser.Scene {
       this.gameScene.events.on('multiplayerConnected', this.onMultiplayerConnected, this)
       this.gameScene.events.on('usersUpdated', this.updateConnectedUsers, this)
       this.gameScene.events.on('buildingClicked', this.onBuildingClicked, this)
-      this.gameScene.events.on('mayorClicked', this.openMayorChat, this)
+      this.gameScene.events.on('emperorClicked', this.openEmperorChat, this)
       this.gameScene.events.on('enduranceClicked', this.showEnduranceStory, this)
     }
 
-    // Create Mayor chat panel (hidden initially)
-    this.createMayorChatPanel()
+    // Create Emperor chat panel (hidden initially)
+    this.createEmperorChatPanel()
 
-    // Create village navigator
-    this.createVillageNavigator()
+    // Create colony navigator
+    this.createColonyNavigator()
 
     // Create team productivity panels
     this.createActivityFeed()
@@ -55,9 +55,9 @@ export class UIScene extends Phaser.Scene {
     this.createAgentOutputViewer()
     this.createGitHubPanel()
 
-    // Listen for new villages
+    // Listen for new colonies
     if (this.gameScene) {
-      this.gameScene.events.on('villageAdded', this.updateVillageNavigator, this)
+      this.gameScene.events.on('colonyAdded', this.updateColonyNavigator, this)
     }
 
     // Handle resize
@@ -153,7 +153,7 @@ export class UIScene extends Phaser.Scene {
         this.dismissNotification(notif)
         // Navigate to agent
         if (this.gameScene && agentData.rig && agentData.agent) {
-          this.gameScene.panToVillage(agentData.rig)
+          this.gameScene.panToColony(agentData.rig)
         }
       })
       notif.add(clickZone)
@@ -641,7 +641,7 @@ export class UIScene extends Phaser.Scene {
     this.resources = {
       tokens: { icon: 'icon-tokens', value: 0, x: 45, label: 'Coins', displayValue: 0 },
       issues: { icon: 'icon-issues', value: 0, x: 170, label: 'Fish', displayValue: 0 },
-      convoys: { icon: 'icon-convoys', value: 0, x: 280, label: 'Stamps', displayValue: 0 }
+      tasks: { icon: 'icon-convoys', value: 0, x: 280, label: 'Tasks', displayValue: 0 }
     }
 
     Object.entries(this.resources).forEach(([key, res]) => {
@@ -691,7 +691,7 @@ export class UIScene extends Phaser.Scene {
     })
 
     // Town name with penguin flair
-    this.townName = this.add.text(width - 30, 18, 'PENGUIN TOWN', {
+    this.townName = this.add.text(width - 30, 18, 'PENGUIN COLONY', {
       font: 'bold 20px Fredoka',
       fill: '#FFFFFF',
       stroke: '#005588',
@@ -844,9 +844,9 @@ export class UIScene extends Phaser.Scene {
 
         this.showNotification(type, title, message, { agent, rig })
 
-        // Also add to Mayor chat if open
-        if (this.mayorChat?.visible && type === 'stuck') {
-          this.addMayorMessage('mayor', `Alert: ${agent} in ${rig} needs help! ${message}`)
+        // Also add to Emperor chat if open
+        if (this.emperorChat?.visible && type === 'stuck') {
+          this.addEmperorMessage('emperor', `Alert: ${agent} in ${rig} needs help! ${message}`)
         }
       })
 
@@ -1138,10 +1138,10 @@ export class UIScene extends Phaser.Scene {
 
     // Status badge background
     this.cardStatusBg = this.add.graphics()
-    this.cardStatus = this.add.text(cardWidth/2, 132, 'IDLE', {
+    this.cardStatus = this.add.text(cardWidth/2, 142, 'IDLE', {
       font: 'bold 13px Fredoka',
       fill: '#FFFFFF'
-    }).setOrigin(0.5, 0)
+    }).setOrigin(0.5, 0.5)
 
     // Action buttons container
     this.cardButtons = this.add.container(12, 165)
@@ -1291,12 +1291,12 @@ export class UIScene extends Phaser.Scene {
     // Badge with gradient
     const darkStatus = this.darkenColor(statusColor, 40)
     this.cardStatusBg.fillStyle(darkStatus, 1)
-    this.cardStatusBg.fillRoundedRect(110 - textWidth/2, 130, textWidth, 24, 12)
+    this.cardStatusBg.fillRoundedRect(110 - textWidth/2, 134, textWidth, 24, 12)
     this.cardStatusBg.fillStyle(statusColor, 1)
-    this.cardStatusBg.fillRoundedRect(110 - textWidth/2, 128, textWidth, 22, 11)
+    this.cardStatusBg.fillRoundedRect(110 - textWidth/2, 132, textWidth, 22, 11)
     // Shine
     this.cardStatusBg.fillStyle(0xFFFFFF, 0.25)
-    this.cardStatusBg.fillRoundedRect(110 - textWidth/2 + 3, 130, textWidth - 6, 8, { tl: 8, tr: 8, bl: 0, br: 0 })
+    this.cardStatusBg.fillRoundedRect(110 - textWidth/2 + 3, 134, textWidth - 6, 8, { tl: 8, tr: 8, bl: 0, br: 0 })
 
     // Clear previous progress info
     if (this.cardProgressContainer) {
@@ -1567,6 +1567,12 @@ export class UIScene extends Phaser.Scene {
     this.selectedUnit = null
     this.selectedBuilding = building
 
+    // Clear any leftover watching indicator from previous selection
+    if (this.watchingIndicator) {
+      this.watchingIndicator.destroy()
+      this.watchingIndicator = null
+    }
+
     // Prevent accidental button clicks from the same pointer event that opened the card
     this._cardClickGuard = true
     this.time.delayedCall(300, () => { this._cardClickGuard = false })
@@ -1629,7 +1635,7 @@ export class UIScene extends Phaser.Scene {
     this.cardStatusBg.fillStyle(0xFFFFFF, 0.25)
     this.cardStatusBg.fillRoundedRect(58, 145, 94, 8, { tl: 8, tr: 8, bl: 0, br: 0 })
     this.cardStatus.setText('BUILDING')
-    this.cardStatus.setY(147)
+    this.cardStatus.setY(153)
 
     // Building-specific buttons
     this.createBuildingButtons(building)
@@ -1646,18 +1652,23 @@ export class UIScene extends Phaser.Scene {
     // Hub buildings get role-appropriate buttons (not rig controls)
     let buttons = []
     if (building.type === 'building-townhall') {
-      // Gas Town HQ: informational only — Mayor penguin handles interaction
+      // Colony HQ: informational only — Emperor penguin handles interaction
       return
     } else if (building.type === 'building-barracks') {
-      // Barracks: polecat spawning hub — view all polecats across rigs
+      // Barracks: agent spawning hub — view all agents across rigs
       buttons = [
-        { label: 'VIEW ALL POLECATS', action: 'listAll', color: 0x3498DB }
+        { label: 'VIEW ALL AGENTS', action: 'listAll', color: 0x3498DB }
+      ]
+    } else if (building.type === 'building-refinery' || building.type === 'building-ops') {
+      // Operations dashboard
+      buttons = [
+        { label: 'OPERATIONS', action: 'operations', color: 0xE67E22 }
       ]
     } else {
       // Rig buildings: full rig controls
       buttons = [
-        { label: 'SPAWN POLECAT', action: 'spawn', color: 0x2ECC71 },
-        { label: 'VIEW POLECATS', action: 'list', color: 0x3498DB },
+        { label: 'SPAWN AGENT', action: 'spawn', color: 0x2ECC71 },
+        { label: 'VIEW AGENTS', action: 'list', color: 0x3498DB },
         { label: 'CLONE REPO', action: 'clone', color: 0x9B59B6 },
         { label: 'REMOVE RIG', action: 'remove', color: 0xE74C3C }
       ]
@@ -1724,12 +1735,12 @@ export class UIScene extends Phaser.Scene {
     switch(action) {
       case 'spawn':
         try {
-          this.statusText.setText('Spawning polecat...')
+          this.statusText.setText('Spawning agent...')
           const result = await this.api.spawnPolecat(rigName)
           this.statusText.setText(`Spawned: ${result.name}`)
           await this.showModal({
-            title: 'POLECAT SPAWNED!',
-            message: `New polecat "${result.name}" is ready to work!`,
+            title: 'AGENT SPAWNED!',
+            message: `New agent "${result.name}" is ready to work!`,
             showCancel: false
           })
           if (this.gameScene) this.gameScene.refreshState()
@@ -1747,9 +1758,9 @@ export class UIScene extends Phaser.Scene {
           const polecats = await this.api.getPolecats(rigName)
           const list = polecats.length > 0
             ? polecats.map(p => `• ${p.name} (${p.status})`).join('\n')
-            : 'No polecats yet'
+            : 'No agents yet'
           await this.showModal({
-            title: `POLECATS IN ${rigName.toUpperCase()}`,
+            title: `AGENTS IN ${rigName.toUpperCase()}`,
             message: list,
             showCancel: false
           })
@@ -1792,12 +1803,12 @@ export class UIScene extends Phaser.Scene {
         try {
           const statusResp = await fetch('/api/status')
           const statusData = await statusResp.json()
-          const allPolecats = statusData.polecats || []
-          const list = allPolecats.length > 0
-            ? allPolecats.map(p => `• ${p.name} [${p.rig}] (${p.status})`).join('\n')
-            : 'No polecats deployed across any rig'
+          const allAgents = statusData.polecats || []
+          const list = allAgents.length > 0
+            ? allAgents.map(p => `• ${p.name} [${p.rig}] (${p.status})`).join('\n')
+            : 'No agents deployed across any rig'
           await this.showModal({
-            title: 'ALL POLECATS',
+            title: 'ALL AGENTS',
             message: list,
             showCancel: false
           })
@@ -1809,10 +1820,13 @@ export class UIScene extends Phaser.Scene {
           })
         }
         break
+      case 'operations':
+        this.showOperationsDashboard()
+        break
       case 'remove':
         const result = await this.showModal({
           title: 'REMOVE RIG',
-          message: `Remove "${rigName}" from Gas Town? This unregisters the rig and kills any running sessions.`,
+          message: `Remove "${rigName}" from the Colony? This unregisters the rig and kills any running sessions.`,
           checkbox: 'Also delete files on disk',
         })
         if (result && result.confirmed) {
@@ -1825,7 +1839,7 @@ export class UIScene extends Phaser.Scene {
             this.hideSelectionCard()
             this.statusText.setText(`Removed: ${rigName}`)
             if (this.gameScene) this.gameScene.refreshState()
-            // Reload to clear the village from the map
+            // Reload to clear the colony from the map
             this.time.delayedCall(500, () => location.reload())
           } catch(e) {
             this.statusText.setText('Remove failed')
@@ -1939,8 +1953,8 @@ export class UIScene extends Phaser.Scene {
     if (state.openIssues !== undefined) {
       this.animateResourceCounter(this.resources.issues, state.openIssues)
     }
-    if (state.activeConvoys !== undefined) {
-      this.animateResourceCounter(this.resources.convoys, state.activeConvoys)
+    if (state.activeTasks !== undefined) {
+      this.animateResourceCounter(this.resources.tasks, state.activeTasks)
     }
   }
 
@@ -1953,10 +1967,10 @@ export class UIScene extends Phaser.Scene {
       return
     }
 
-    // Build proper agent path for API calls: rig/polecats/polecatName
-    // unit.id is "polecat-{name}" (game ID), unit.unitName is the raw polecat name
+    // Build proper agent path for API calls: team/memberName
+    // unit.id is "polecat-{name}" (game ID), unit.unitName is the raw member name
     const polecatName = unit.unitName || unit.id
-    const agentId = unit.rig ? `${unit.rig}/polecats/${polecatName}` : polecatName
+    const agentId = unit.rig ? `${unit.rig}/${polecatName}` : polecatName
     console.log('Executing command:', action, 'on', agentId)
 
     switch(action) {
@@ -2023,8 +2037,8 @@ export class UIScene extends Phaser.Scene {
 
       if (polecats.length === 0) {
         await this.showModal({
-          title: 'NO POLECATS',
-          message: 'Spawn some polecats first to test the sea lion attack!',
+          title: 'NO AGENTS',
+          message: 'Spawn some agents first to test the sea lion attack!',
           showCancel: false
         })
         return
@@ -2063,7 +2077,7 @@ export class UIScene extends Phaser.Scene {
       }).setOrigin(0.5)
 
       // Subtitle
-      const subtitle = this.add.text(0, -panelHeight/2 + 75, 'Pick a polecat to test stuck detection:', {
+      const subtitle = this.add.text(0, -panelHeight/2 + 75, 'Pick an agent to test stuck detection:', {
         font: '12px Fredoka',
         fill: '#666666'
       }).setOrigin(0.5)
@@ -2086,7 +2100,7 @@ export class UIScene extends Phaser.Scene {
         badge.fillStyle(statusColor, 1)
         badge.fillRoundedRect(-panelWidth/2 + 28, yPos + 8, 8, 29, 4)
 
-        // Polecat name
+        // Agent name
         const name = this.add.text(-panelWidth/2 + 48, yPos + 10, `${statusIcon} ${polecat.name}`, {
           font: 'bold 13px Fredoka',
           fill: '#333333'
@@ -2108,7 +2122,7 @@ export class UIScene extends Phaser.Scene {
         attackZone.setInteractive({ useHandCursor: true })
         attackZone.on('pointerup', async () => {
           picker.destroy()
-          const agentId = `${polecat.rig}/polecats/${polecat.name}`
+          const agentId = `${polecat.rig}/${polecat.name}`
           await this.doTestStuckDirect(agentId)
         })
 
@@ -2130,7 +2144,7 @@ export class UIScene extends Phaser.Scene {
     } catch (e) {
       await this.showModal({
         title: 'ERROR',
-        message: 'Failed to load polecats: ' + e.message,
+        message: 'Failed to load agents: ' + e.message,
         showCancel: false
       })
     }
@@ -2140,7 +2154,7 @@ export class UIScene extends Phaser.Scene {
     try {
       this.statusText.setText('Summoning sea lion...')
 
-      // Extract polecat name from agentId (format: rigName/polecats/polecatName)
+      // Extract polecat name from agentId (format: teamName/memberName)
       const parts = agentId.split('/')
       const polecatName = parts[parts.length - 1]
 
@@ -2155,7 +2169,7 @@ export class UIScene extends Phaser.Scene {
           // Also update the server status
           this.api.simulateStuck(agentId).catch(() => {})
         } else {
-          this.statusText.setText('Polecat not found in game')
+          this.statusText.setText('Agent not found in game')
         }
       }
     } catch (e) {
@@ -2202,10 +2216,10 @@ export class UIScene extends Phaser.Scene {
       const result = await this.api.getHook(agentId)
 
       let message = ''
-      let title = 'POLECAT STATUS'
+      let title = 'AGENT STATUS'
 
       if (result.status === 'stuck') {
-        title = 'POLECAT NEEDS HELP!'
+        title = 'AGENT NEEDS HELP!'
         message += `Task: ${result.hook || 'Unknown task'}\n\n`
         message += `Status: STUCK\n`
 
@@ -2227,7 +2241,7 @@ export class UIScene extends Phaser.Scene {
         message += `\nOptions: Reassign work or mark complete.`
 
       } else if (result.hook) {
-        title = 'POLECAT PROGRESS'
+        title = 'AGENT PROGRESS'
         message += `Task: ${result.hook}\n\n`
         message += `Status: ${result.status || 'unknown'}\n`
 
@@ -2246,7 +2260,7 @@ export class UIScene extends Phaser.Scene {
         }
 
       } else if (result.completedTask) {
-        title = 'POLECAT IDLE'
+        title = 'AGENT IDLE'
         message += `Last completed: ${result.completedTask}\n`
         if (result.completedAt) {
           const completed = new Date(result.completedAt)
@@ -2255,8 +2269,8 @@ export class UIScene extends Phaser.Scene {
         message += `\nReady for new work!`
 
       } else {
-        title = 'POLECAT IDLE'
-        message = 'No active task - polecat is ready for work!'
+        title = 'AGENT IDLE'
+        message = 'No active task - agent is ready for work!'
       }
 
       this.statusText.setText('Status loaded')
@@ -2284,24 +2298,18 @@ export class UIScene extends Phaser.Scene {
     })
     if (!message) return
 
-    const subject = await this.showModal({
-      title: 'SUBJECT',
-      message: 'Enter subject (optional)',
-      inputType: 'text',
-      placeholder: 'Subject line...'
-    }) || ''
-
     try {
-      this.statusText.setText('Sending mail...')
-      await this.api.sendMail(agentId, subject, message)
-      this.statusText.setText('Mail sent!')
+      this.statusText.setText('Sending message...')
+      // Use sling endpoint to inject message into tmux session
+      await this.api.sling(agentId, message)
+      this.statusText.setText('Message sent!')
       await this.showModal({
         title: 'MESSAGE SENT!',
         message: `Your message was delivered to ${agentId}`,
         showCancel: false
       })
     } catch (e) {
-      this.statusText.setText('Mail failed')
+      this.statusText.setText('Send failed')
       await this.showModal({
         title: 'SEND FAILED',
         message: e.message,
@@ -2366,15 +2374,15 @@ export class UIScene extends Phaser.Scene {
         // Spawn a new polecat and assign to it
         const newPolecat = await this.api.spawnPolecat(rigName)
         if (this.gameScene) {
-          this.gameScene.addPolecatToVillage(rigName, newPolecat.name)
+          this.gameScene.addPolecatToColony(rigName, newPolecat.name)
         }
-        await this.api.reassign(agentId, `${rigName}/polecats/${newPolecat.name}`, rigName)
+        await this.api.reassign(agentId, `${rigName}/${newPolecat.name}`, rigName)
         this.showNotification('success', 'Task Reassigned',
           `Spawned ${newPolecat.name} and reassigned task`,
           { agent: newPolecat.name, rig: rigName })
       } else {
         // Reassign to existing polecat
-        await this.api.reassign(agentId, `${rigName}/polecats/${choice}`, rigName)
+        await this.api.reassign(agentId, `${rigName}/${choice}`, rigName)
         this.showNotification('success', 'Task Reassigned',
           `Task moved to ${choice}`,
           { agent: choice, rig: rigName })
@@ -2398,13 +2406,13 @@ export class UIScene extends Phaser.Scene {
   }
 
   findRigForAgent(agentId) {
-    // Try to extract rig from agent ID (format: rig/polecats/name)
+    // Try to extract team from agent ID (format: team/name)
     const parts = agentId.split('/')
-    if (parts.length >= 3) return parts[0]
+    if (parts.length >= 2) return parts[0]
 
-    // Search villages for this agent
-    const villages = this.gameScene?.villages || []
-    for (const v of villages) {
+    // Search colonies for this agent
+    const colonies = this.gameScene?.colonies || []
+    for (const v of colonies) {
       if (v.polecats?.includes(agentId)) {
         return v.name
       }
@@ -2440,7 +2448,7 @@ export class UIScene extends Phaser.Scene {
         fill: '#FFFFFF'
       }).setOrigin(0.5)
 
-      const subtitle = this.add.text(0, -modalHeight/2 + 75, 'Choose a polecat to take over:', {
+      const subtitle = this.add.text(0, -modalHeight/2 + 75, 'Choose an agent to take over:', {
         font: '13px Fredoka',
         fill: '#666666'
       }).setOrigin(0.5)
@@ -2457,7 +2465,7 @@ export class UIScene extends Phaser.Scene {
 
       // Idle polecats
       if (idlePolecats.length === 0) {
-        const noIdle = this.add.text(0, yPos + 20, 'No idle polecats available', {
+        const noIdle = this.add.text(0, yPos + 20, 'No idle agents available', {
           font: '12px Fredoka',
           fill: '#999999'
         }).setOrigin(0.5)
@@ -2486,7 +2494,7 @@ export class UIScene extends Phaser.Scene {
       yPos += 10
       const spawnBtn = this.add.graphics()
       this.drawButton(spawnBtn, -modalWidth/2 + 20, yPos, modalWidth - 40, 38, 0x2ECC71, true)
-      const spawnText = this.add.text(0, yPos + 19, '+ SPAWN NEW POLECAT', {
+      const spawnText = this.add.text(0, yPos + 19, '+ SPAWN NEW AGENT', {
         font: 'bold 13px Fredoka',
         fill: '#FFFFFF'
       }).setOrigin(0.5)
@@ -2530,7 +2538,7 @@ export class UIScene extends Phaser.Scene {
   async doMarkComplete(agentId) {
     const confirm = await this.showModal({
       title: 'MARK COMPLETE',
-      message: `Mark ${agentId}'s task as complete?\n\nThis will set the polecat to idle.`,
+      message: `Mark ${agentId}'s task as complete?\n\nThis will set the agent to idle.`,
       showCancel: true
     })
     if (!confirm) return
@@ -2600,16 +2608,16 @@ export class UIScene extends Phaser.Scene {
     this.playNotificationSound('success')
   }
 
-  // Mayor Chat Panel
-  createMayorChatPanel() {
+  // Emperor Chat Panel
+  createEmperorChatPanel() {
     const width = this.cameras.main.width
     const height = this.cameras.main.height
     const panelWidth = 360
     const panelHeight = 450
 
-    this.mayorChat = this.add.container(width - panelWidth - 20, 70)
-    this.mayorChat.setVisible(false)
-    this.mayorChat.setDepth(900)
+    this.emperorChat = this.add.container(width - panelWidth - 20, 70)
+    this.emperorChat.setVisible(false)
+    this.emperorChat.setDepth(900)
 
     // Panel background
     const bg = this.add.graphics()
@@ -2631,24 +2639,24 @@ export class UIScene extends Phaser.Scene {
     bg.lineStyle(3, 0x8B4513, 1)
     bg.strokeRoundedRect(0, 0, panelWidth, panelHeight, 20)
 
-    // Mayor avatar
+    // Emperor avatar
     const avatarBg = this.add.graphics()
     avatarBg.fillStyle(0xFFFFFF, 1)
     avatarBg.fillCircle(45, 35, 28)
     avatarBg.lineStyle(3, 0x6B3510, 1)
     avatarBg.strokeCircle(45, 35, 28)
 
-    const mayorAvatar = this.add.image(45, 35, 'unit-mayor').setScale(0.6)
+    const emperorAvatar = this.add.image(45, 35, 'unit-emperor').setScale(0.6)
 
     // Title
-    const title = this.add.text(85, 20, 'MAYOR', {
+    const title = this.add.text(85, 20, 'EMPEROR', {
       font: 'bold 22px Fredoka',
       fill: '#FFFFFF',
       stroke: '#6B3510',
       strokeThickness: 2
     })
 
-    const subtitle = this.add.text(85, 44, 'Town Manager', {
+    const subtitle = this.add.text(85, 44, 'Colony Coordinator', {
       font: '13px Fredoka',
       fill: '#D2B48C'
     })
@@ -2662,7 +2670,7 @@ export class UIScene extends Phaser.Scene {
       fill: '#FFFFFF'
     }).setOrigin(0.5)
     const closeZone = this.add.zone(panelWidth - 25, 25, 28, 28).setInteractive({ useHandCursor: true })
-    closeZone.on('pointerdown', () => this.closeMayorChat())
+    closeZone.on('pointerdown', () => this.closeEmperorChat())
 
     // Chat history area
     const chatBg = this.add.graphics()
@@ -2673,6 +2681,19 @@ export class UIScene extends Phaser.Scene {
     this.chatMessages = this.add.container(20, 85)
     this.chatHistory = []
     this.chatScrollY = 0
+    this.chatContentHeight = 0
+
+    // Clip mask so messages don't overflow the chat area
+    const chatAreaX = this.emperorChat.x + 12
+    const chatAreaY = 70 + 75
+    const chatAreaW = panelWidth - 24
+    const chatAreaH = panelHeight - 150
+    this._chatMaskShape = this.add.graphics()
+    this._chatMaskShape.fillStyle(0xffffff)
+    this._chatMaskShape.fillRect(chatAreaX, chatAreaY, chatAreaW, chatAreaH)
+    this._chatMaskShape.setVisible(false)
+    this.chatMessages.setMask(new Phaser.Display.Masks.GeometryMask(this, this._chatMaskShape))
+    this._chatAreaH = chatAreaH
 
     // Input area background
     const inputBg = this.add.graphics()
@@ -2689,33 +2710,53 @@ export class UIScene extends Phaser.Scene {
       fill: '#FFFFFF'
     }).setOrigin(0.5)
     const sendZone = this.add.zone(panelWidth - 36, panelHeight - 42, 48, 45).setInteractive({ useHandCursor: true })
-    sendZone.on('pointerdown', () => this.sendMayorMessage())
+    sendZone.on('pointerdown', () => this.sendEmperorMessage())
 
-    this.mayorChat.add([bg, avatarBg, mayorAvatar, title, subtitle, closeBtn, closeX, closeZone,
+    this.emperorChat.add([bg, avatarBg, emperorAvatar, title, subtitle, closeBtn, closeX, closeZone,
                         chatBg, this.chatMessages, inputBg, sendBtn, sendText, sendZone])
 
     // Add welcome message
-    this.addMayorMessage("mayor", "Welcome to Penguin Town! I'm the Mayor. I can help you:\n\n• Create new projects\n• Clone repos\n• Describe what you need built - I'll create tasks!\n• Assign issue numbers or full specs\n\nJust tell me what you need!")
+    this.addEmperorMessage("emperor", "Welcome to Penguin Colony! I'm the Emperor. I can help you:\n\n• Create new projects\n• Clone repos\n• Describe what you need built - I'll create tasks!\n• Assign issue numbers or full specs\n\nJust tell me what you need!")
   }
 
-  openMayorChat() {
-    this.mayorChat.setVisible(true)
-    this.mayorChat.setAlpha(0)
-    this.mayorChat.setX(this.cameras.main.width)
+  openEmperorChat() {
+    this.emperorChat.setVisible(true)
+    this.emperorChat.setAlpha(0)
+    this.emperorChat.setX(this.cameras.main.width)
 
+    const finalX = this.cameras.main.width - 380
     this.tweens.add({
-      targets: this.mayorChat,
-      x: this.cameras.main.width - 380,
+      targets: this.emperorChat,
+      x: finalX,
       alpha: 1,
       duration: 300,
-      ease: 'Back.easeOut'
+      ease: 'Back.easeOut',
+      onComplete: () => {
+        // Reposition chat mask to match final panel position
+        if (this._chatMaskShape) {
+          this._chatMaskShape.clear()
+          this._chatMaskShape.fillStyle(0xffffff)
+          this._chatMaskShape.fillRect(finalX + 12, 70 + 75, 336, this._chatAreaH)
+        }
+      }
     })
+
+    // Start Emperor session on first open
+    if (!this._emperorStarted) {
+      this._emperorStarted = true
+      this.api.startEmperor().then(() => {
+        // Open SSE stream for Emperor output
+        this._openEmperorStream()
+      }).catch(e => {
+        this.addEmperorMessage('emperor', `Failed to start Emperor: ${e.message}`)
+      })
+    }
 
     // Create DOM input for chat
     if (!this.chatInput) {
       this.chatInput = document.createElement('input')
       this.chatInput.type = 'text'
-      this.chatInput.placeholder = 'Ask the Mayor...'
+      this.chatInput.placeholder = 'Ask the Emperor...'
       this.chatInput.style.cssText = `
         position: fixed;
         right: 100px;
@@ -2734,7 +2775,7 @@ export class UIScene extends Phaser.Scene {
 
       this.chatInput.addEventListener('keypress', (e) => {
         if (e.key === 'Enter' && this.chatInput.value.trim()) {
-          this.sendMayorMessage()
+          this.sendEmperorMessage()
         }
       })
 
@@ -2747,24 +2788,62 @@ export class UIScene extends Phaser.Scene {
     this.chatInput.focus()
   }
 
-  closeMayorChat() {
+  _openEmperorStream() {
+    if (this._emperorEventSource) return
+    this._emperorStreamBuffer = ''
+    this._emperorStreamFlushTimer = null
+    this._emperorEventSource = this.api.openEmperorStream()
+    this._emperorEventSource.onmessage = (event) => {
+      try {
+        const data = JSON.parse(event.data)
+        if (data.type === 'text_delta') {
+          this._emperorStreamBuffer += (data.content || data.text || '')
+          // Flush after 300ms idle to batch rapid deltas
+          clearTimeout(this._emperorStreamFlushTimer)
+          this._emperorStreamFlushTimer = setTimeout(() => this._flushEmperorStreamText(), 300)
+        } else if (data.type === 'tool_progress') {
+          this._flushEmperorStreamText()
+          this.addEmperorMessage('system', `[Using ${data.tool}...]`)
+        } else if (data.type === 'result' && data.cost) {
+          this._flushEmperorStreamText()
+          this.addEmperorMessage('system', `Cost: $${data.cost.costUsd.toFixed(4)}`)
+        } else if (data.content) {
+          // Backward compat: plain content messages
+          this.addEmperorMessage('emperor', data.content)
+        }
+      } catch { /* ignore parse errors */ }
+    }
+    this._emperorEventSource.onerror = () => {
+      // SSE reconnects automatically, no action needed
+    }
+  }
+
+  _flushEmperorStreamText() {
+    if (this._emperorStreamBuffer) {
+      this.addEmperorMessage('emperor', this._emperorStreamBuffer)
+      this._emperorStreamBuffer = ''
+    }
+  }
+
+  closeEmperorChat() {
     this.tweens.add({
-      targets: this.mayorChat,
+      targets: this.emperorChat,
       x: this.cameras.main.width + 50,
       alpha: 0,
       duration: 200,
       ease: 'Back.easeIn',
-      onComplete: () => this.mayorChat.setVisible(false)
+      onComplete: () => this.emperorChat.setVisible(false)
     })
 
     if (this.chatInput) {
       this.chatInput.style.display = 'none'
     }
+    // Keep Emperor session running (persist) — don't close SSE
   }
 
-  addMayorMessage(sender, text) {
+  addEmperorMessage(sender, text) {
     const isUser = sender === 'user'
-    const yPos = this.chatHistory.length * 70
+    const yPos = this.chatContentHeight
 
     const msgContainer = this.add.container(0, yPos)
 
@@ -2790,31 +2869,35 @@ export class UIScene extends Phaser.Scene {
 
     msgContainer.add([bubble, textObj])
     this.chatMessages.add(msgContainer)
-    this.chatHistory.push({ sender, text })
+    this.chatHistory.push({ sender, text, height: bubbleHeight })
 
-    // Scroll to bottom
-    const maxScroll = Math.max(0, (this.chatHistory.length * 70) - 280)
+    // Track total content height with 8px gap between messages
+    this.chatContentHeight += bubbleHeight + 8
+
+    // Scroll to bottom — keep latest message visible
+    const chatAreaH = this._chatAreaH || 300
+    const maxScroll = Math.max(0, this.chatContentHeight - chatAreaH)
     this.chatMessages.y = 85 - maxScroll
   }
 
-  async sendMayorMessage() {
+  async sendEmperorMessage() {
     const text = this.chatInput?.value?.trim()
     if (!text) return
 
     this.chatInput.value = ''
-    this.addMayorMessage('user', text)
+    this.addEmperorMessage('user', text)
 
     // Process the message
-    await this.processMayorCommand(text)
+    await this.processEmperorCommand(text)
   }
 
-  async processMayorCommand(text) {
+  async processEmperorCommand(text) {
     const lower = text.toLowerCase()
 
     // Simple command parsing
     if (lower.includes('new project') || lower.includes('create project') || lower.includes('start project')) {
-      this.addMayorMessage('mayor', "Great! Let's create a new project. What would you like to name it?")
-      this.mayorState = 'awaiting_project_name'
+      this.addEmperorMessage('emperor', "Great! Let's create a new project. What would you like to name it?")
+      this.emperorState = 'awaiting_project_name'
       return
     }
 
@@ -2823,13 +2906,13 @@ export class UIScene extends Phaser.Scene {
       const urlMatch = text.match(/https?:\/\/[^\s]+|github\.com\/[^\s]+/)
       if (urlMatch) {
         const url = urlMatch[0].startsWith('http') ? urlMatch[0] : `https://${urlMatch[0]}`
-        this.addMayorMessage('mayor', `I'll clone ${url} for you. What should I name this project?`)
-        this.mayorState = 'awaiting_clone_name'
+        this.addEmperorMessage('emperor', `I'll clone ${url} for you. What should I name this project?`)
+        this.emperorState = 'awaiting_clone_name'
         this.pendingRepoUrl = url
         return
       }
-      this.addMayorMessage('mayor', "Sure! What's the repository URL you'd like to clone?")
-      this.mayorState = 'awaiting_repo_url'
+      this.addEmperorMessage('emperor', "Sure! What's the repository URL you'd like to clone?")
+      this.emperorState = 'awaiting_repo_url'
       return
     }
 
@@ -2841,8 +2924,8 @@ export class UIScene extends Phaser.Scene {
         await this.autoAssignTask()
         return
       }
-      this.addMayorMessage('mayor', "Which issue number would you like to assign? (e.g., #123)")
-      this.mayorState = 'awaiting_issue_number'
+      this.addEmperorMessage('emperor', "Which issue number would you like to assign? (e.g., #123)")
+      this.emperorState = 'awaiting_issue_number'
       return
     }
 
@@ -2857,25 +2940,25 @@ export class UIScene extends Phaser.Scene {
       return
     }
 
-    if (lower.includes('spawn') || lower.includes('new polecat') || lower.includes('create polecat')) {
-      this.addMayorMessage('mayor', "I'll spawn a new polecat. Which project should they join?")
-      this.mayorState = 'awaiting_spawn_project'
+    if (lower.includes('spawn') || lower.includes('new agent') || lower.includes('create agent') || lower.includes('new polecat') || lower.includes('create polecat')) {
+      this.addEmperorMessage('emperor', "I'll spawn a new agent. Which project should they join?")
+      this.emperorState = 'awaiting_spawn_project'
       return
     }
 
-    if (lower.includes('list') || lower.includes('show') || lower.includes('projects') || lower.includes('villages')) {
-      const villages = this.gameScene?.villages || []
-      if (villages.length === 0) {
-        this.addMayorMessage('mayor', "No projects yet! Say 'new project' to create one.")
+    if (lower.includes('list') || lower.includes('show') || lower.includes('projects') || lower.includes('colonies')) {
+      const colonies = this.gameScene?.colonies || []
+      if (colonies.length === 0) {
+        this.addEmperorMessage('emperor', "No projects yet! Say 'new project' to create one.")
       } else {
-        const list = villages.map(v => `• ${v.name} (${v.polecats?.length || 0} polecats)`).join('\n')
-        this.addMayorMessage('mayor', `Here are your projects:\n\n${list}`)
+        const list = colonies.map(v => `• ${v.name} (${v.polecats?.length || 0} agents)`).join('\n')
+        this.addEmperorMessage('emperor', `Here are your projects:\n\n${list}`)
       }
       return
     }
 
     if (lower.includes('help')) {
-      this.addMayorMessage('mayor', "I can help you with:\n\n• 'New project' - Create a village\n• 'Clone [url]' - Import a repo\n• 'Assign #123' - Give issue work\n• Describe a task - I'll create & assign it!\n• 'Spawn polecat' - New worker\n• 'List projects' - See all villages\n• 'Status' - How are things going?\n\nTry: \"Build a login page with OAuth\"")
+      this.addEmperorMessage('emperor', "I can help you with:\n\n• 'New project' - Create a colony\n• 'Clone [url]' - Import a repo\n• 'Assign #123' - Give issue work\n• Describe a task - I'll create & assign it!\n• 'Spawn agent' - New worker\n• 'List projects' - See all colonies\n• 'Status' - How are things going?\n\nTry: \"Build a login page with OAuth\"")
       return
     }
 
@@ -2885,101 +2968,101 @@ export class UIScene extends Phaser.Scene {
     }
 
     // Handle state-based responses
-    if (this.mayorState === 'awaiting_project_name') {
+    if (this.emperorState === 'awaiting_project_name') {
       const name = text.replace(/[^a-zA-Z0-9_]/g, '_').toLowerCase()
-      this.addMayorMessage('mayor', `Creating project "${name}"...`)
+      this.addEmperorMessage('emperor', `Creating project "${name}"...`)
       try {
         await this.api.createRig(name)
         if (this.gameScene) {
-          this.gameScene.addVillage(name)
+          this.gameScene.addColony(name)
         }
-        this.addMayorMessage('mayor', `Done! "${name}" village is ready. Want me to clone a repo into it?`)
+        this.addEmperorMessage('emperor', `Done! "${name}" colony is ready. Want me to clone a repo into it?`)
         this.currentProject = name
-        this.mayorState = 'awaiting_clone_confirm'
+        this.emperorState = 'awaiting_clone_confirm'
       } catch (e) {
-        this.addMayorMessage('mayor', `Oops! Failed to create project: ${e.message}`)
-        this.mayorState = null
+        this.addEmperorMessage('emperor', `Oops! Failed to create project: ${e.message}`)
+        this.emperorState = null
       }
       return
     }
 
-    if (this.mayorState === 'awaiting_repo_url') {
+    if (this.emperorState === 'awaiting_repo_url') {
       const url = text.startsWith('http') ? text : `https://${text}`
-      this.addMayorMessage('mayor', "Got it! What should I name this project?")
+      this.addEmperorMessage('emperor', "Got it! What should I name this project?")
       this.pendingRepoUrl = url
-      this.mayorState = 'awaiting_clone_name'
+      this.emperorState = 'awaiting_clone_name'
       return
     }
 
-    if (this.mayorState === 'awaiting_clone_name') {
+    if (this.emperorState === 'awaiting_clone_name') {
       const name = text.replace(/[^a-zA-Z0-9_]/g, '_').toLowerCase()
-      this.addMayorMessage('mayor', `Creating "${name}" and cloning the repo...`)
+      this.addEmperorMessage('emperor', `Creating "${name}" and cloning the repo...`)
       try {
         await this.api.createRig(name)
         await this.api.cloneRepo(name, this.pendingRepoUrl)
         if (this.gameScene) {
-          this.gameScene.addVillage(name, this.pendingRepoUrl)
+          this.gameScene.addColony(name, this.pendingRepoUrl)
         }
-        this.addMayorMessage('mayor', `Success! "${name}" is set up with the repo. Shall I spawn a polecat to work on it?`)
+        this.addEmperorMessage('emperor', `Success! "${name}" is set up with the repo. Shall I spawn an agent to work on it?`)
         this.currentProject = name
-        this.mayorState = 'awaiting_spawn_confirm'
+        this.emperorState = 'awaiting_spawn_confirm'
       } catch (e) {
-        this.addMayorMessage('mayor', `Failed: ${e.message}`)
-        this.mayorState = null
+        this.addEmperorMessage('emperor', `Failed: ${e.message}`)
+        this.emperorState = null
       }
       return
     }
 
-    if (this.mayorState === 'awaiting_clone_confirm') {
+    if (this.emperorState === 'awaiting_clone_confirm') {
       if (lower.includes('yes') || lower.includes('sure') || lower.includes('ok')) {
-        this.addMayorMessage('mayor', "What's the repo URL?")
-        this.mayorState = 'awaiting_repo_for_existing'
+        this.addEmperorMessage('emperor', "What's the repo URL?")
+        this.emperorState = 'awaiting_repo_for_existing'
       } else {
-        this.addMayorMessage('mayor', "No problem! Let me know if you need anything else.")
-        this.mayorState = null
+        this.addEmperorMessage('emperor', "No problem! Let me know if you need anything else.")
+        this.emperorState = null
       }
       return
     }
 
-    if (this.mayorState === 'awaiting_repo_for_existing') {
+    if (this.emperorState === 'awaiting_repo_for_existing') {
       const url = text.startsWith('http') ? text : `https://${text}`
-      this.addMayorMessage('mayor', `Cloning into "${this.currentProject}"...`)
+      this.addEmperorMessage('emperor', `Cloning into "${this.currentProject}"...`)
       try {
         await this.api.cloneRepo(this.currentProject, url)
-        this.addMayorMessage('mayor', "Cloned! Want me to spawn a polecat?")
-        this.mayorState = 'awaiting_spawn_confirm'
+        this.addEmperorMessage('emperor', "Cloned! Want me to spawn an agent?")
+        this.emperorState = 'awaiting_spawn_confirm'
       } catch (e) {
-        this.addMayorMessage('mayor', `Clone failed: ${e.message}`)
-        this.mayorState = null
+        this.addEmperorMessage('emperor', `Clone failed: ${e.message}`)
+        this.emperorState = null
       }
       return
     }
 
-    if (this.mayorState === 'awaiting_spawn_confirm') {
+    if (this.emperorState === 'awaiting_spawn_confirm') {
       if (lower.includes('yes') || lower.includes('sure') || lower.includes('ok')) {
-        this.addMayorMessage('mayor', "Spawning a polecat...")
+        this.addEmperorMessage('emperor', "Spawning an agent...")
         try {
           const result = await this.api.spawnPolecat(this.currentProject)
           if (this.gameScene) {
-            this.gameScene.addPolecatToVillage(this.currentProject, result.name)
+            this.gameScene.addPolecatToColony(this.currentProject, result.name)
           }
-          this.addMayorMessage('mayor', `${result.name} has joined "${this.currentProject}"! Just tell me what to build and I'll assign it.`)
+          this.addEmperorMessage('emperor', `${result.name} has joined "${this.currentProject}"! Just tell me what to build and I'll assign it.`)
           this.currentPolecat = result.name
-          this.mayorState = null
+          this.emperorState = null
         } catch (e) {
-          this.addMayorMessage('mayor', `Spawn failed: ${e.message}`)
-          this.mayorState = null
+          this.addEmperorMessage('emperor', `Spawn failed: ${e.message}`)
+          this.emperorState = null
         }
       } else {
-        this.addMayorMessage('mayor', "Alright! The project is ready whenever you need it.")
-        this.mayorState = null
+        this.addEmperorMessage('emperor', "Alright! The project is ready whenever you need it.")
+        this.emperorState = null
       }
       return
     }
 
     // Default response
-    this.addMayorMessage('mayor', "I'm not sure what you mean. Try 'help' to see what I can do!")
-    this.mayorState = null
+    this.addEmperorMessage('emperor', "I'm not sure what you mean. Try 'help' to see what I can do!")
+    this.emperorState = null
   }
 
   // Report overall status
@@ -2995,14 +3078,14 @@ export class UIScene extends Phaser.Scene {
       let message = ''
 
       if (polecats.length === 0) {
-        message = "No polecats yet! Create a project and spawn some workers to get started."
+        message = "No agents yet! Create a project and spawn some workers to get started."
       } else {
         message = `Town Status:\n\n`
-        message += `• ${working.length} polecat${working.length !== 1 ? 's' : ''} working\n`
-        message += `• ${idle.length} polecat${idle.length !== 1 ? 's' : ''} idle\n`
+        message += `• ${working.length} agent${working.length !== 1 ? 's' : ''} working\n`
+        message += `• ${idle.length} agent${idle.length !== 1 ? 's' : ''} idle\n`
 
         if (stuck.length > 0) {
-          message += `• ⚠️ ${stuck.length} polecat${stuck.length !== 1 ? 's' : ''} need help!\n\n`
+          message += `• ⚠️ ${stuck.length} agent${stuck.length !== 1 ? 's' : ''} need help!\n\n`
           message += `Stuck agents:\n`
           stuck.forEach(p => {
             message += `  - ${p.name} in ${p.rig}\n`
@@ -3014,45 +3097,44 @@ export class UIScene extends Phaser.Scene {
         }
       }
 
-      this.addMayorMessage('mayor', message)
+      this.addEmperorMessage('emperor', message)
     } catch (e) {
-      this.addMayorMessage('mayor', `Couldn't get status: ${e.message}`)
+      this.addEmperorMessage('emperor', `Couldn't get status: ${e.message}`)
     }
   }
 
   // Auto-assign a task to the best available project and polecat
   async autoAssignTask() {
     if (!this.pendingSpec) {
-      this.addMayorMessage('mayor', "Something went wrong - no task to assign.")
+      this.addEmperorMessage('emperor', "Something went wrong - no task to assign.")
       return
     }
 
-    this.addMayorMessage('mayor', `Got it! I'll find someone to work on:\n"${this.pendingSpec.substring(0, 60)}${this.pendingSpec.length > 60 ? '...' : ''}"`)
+    this.addEmperorMessage('emperor', `Got it! I'll find someone to work on:\n"${this.pendingSpec.substring(0, 60)}${this.pendingSpec.length > 60 ? '...' : ''}"`)
 
     // Get projects from API (more reliable than gameScene)
     let projects = []
     try {
       const rigs = await this.api.getRigs()
-      // Filter out system rigs
-      projects = rigs.filter(r => !['mayor', 'deacon', 'refinery'].includes(r.name))
+      projects = rigs
     } catch (e) {
       console.error('Failed to get rigs:', e)
     }
 
     // If no projects, create a default one
     if (projects.length === 0) {
-      this.addMayorMessage('mayor', `No projects yet - creating one...`)
+      this.addEmperorMessage('emperor', `No projects yet - creating one...`)
       try {
         const projectName = 'my_project'
         await this.api.createRig(projectName)
         if (this.gameScene) {
-          this.gameScene.addVillage(projectName)
+          this.gameScene.addColony(projectName)
         }
         this.currentProject = projectName
-        this.addMayorMessage('mayor', `Created project "${projectName}"!`)
+        this.addEmperorMessage('emperor', `Created project "${projectName}"!`)
       } catch (e) {
-        this.addMayorMessage('mayor', `Failed to create project: ${e.message}`)
-        this.mayorState = null
+        this.addEmperorMessage('emperor', `Failed to create project: ${e.message}`)
+        this.emperorState = null
         this.pendingSpec = null
         return
       }
@@ -3067,7 +3149,7 @@ export class UIScene extends Phaser.Scene {
       }
     }
 
-    this.addMayorMessage('mayor', `Using project "${this.currentProject}"...`)
+    this.addEmperorMessage('emperor', `Using project "${this.currentProject}"...`)
 
     // Now find or spawn a polecat
     try {
@@ -3078,29 +3160,29 @@ export class UIScene extends Phaser.Scene {
 
       if (idlePolecat) {
         this.currentPolecat = idlePolecat.name
-        this.addMayorMessage('mayor', `Found idle polecat: ${idlePolecat.name}`)
+        this.addEmperorMessage('emperor', `Found idle agent: ${idlePolecat.name}`)
       } else if (polecats.length === 0) {
-        // No polecats - spawn one
-        this.addMayorMessage('mayor', `No polecats yet - spawning one...`)
+        // No agents - spawn one
+        this.addEmperorMessage('emperor', `No agents yet - spawning one...`)
         const result = await this.api.spawnPolecat(this.currentProject)
         if (this.gameScene) {
-          this.gameScene.addPolecatToVillage(this.currentProject, result.name)
+          this.gameScene.addPolecatToColony(this.currentProject, result.name)
         }
         this.currentPolecat = result.name
       } else {
-        // All polecats busy - spawn another
-        this.addMayorMessage('mayor', `All ${polecats.length} polecats busy - spawning another...`)
+        // All agents busy - spawn another
+        this.addEmperorMessage('emperor', `All ${polecats.length} agents busy - spawning another...`)
         const result = await this.api.spawnPolecat(this.currentProject)
         if (this.gameScene) {
-          this.gameScene.addPolecatToVillage(this.currentProject, result.name)
+          this.gameScene.addPolecatToColony(this.currentProject, result.name)
         }
         this.currentPolecat = result.name
       }
 
       await this.slingSpecToPolecat()
     } catch (e) {
-      this.addMayorMessage('mayor', `Error assigning task: ${e.message}`)
-      this.mayorState = null
+      this.addEmperorMessage('emperor', `Error assigning task: ${e.message}`)
+      this.emperorState = null
       this.pendingSpec = null
     }
   }
@@ -3108,21 +3190,21 @@ export class UIScene extends Phaser.Scene {
   // Helper to sling the pending spec to the current polecat
   async slingSpecToPolecat() {
     if (!this.pendingSpec || !this.currentPolecat || !this.currentProject) {
-      this.addMayorMessage('mayor', "Something went wrong - missing task details. Please try again.")
-      this.mayorState = null
+      this.addEmperorMessage('emperor', "Something went wrong - missing task details. Please try again.")
+      this.emperorState = null
       return
     }
 
-    this.addMayorMessage('mayor', `Assigning task to ${this.currentPolecat}...\n\n"${this.pendingSpec.substring(0, 80)}${this.pendingSpec.length > 80 ? '...' : ''}"`)
+    this.addEmperorMessage('emperor', `Assigning task to ${this.currentPolecat}...\n\n"${this.pendingSpec.substring(0, 80)}${this.pendingSpec.length > 80 ? '...' : ''}"`)
 
     try {
       // Use the spec as the "issue" - the sling endpoint accepts any string
       await this.api.sling(
-        `${this.currentProject}/polecats/${this.currentPolecat}`,
+        `${this.currentProject}/${this.currentPolecat}`,
         this.pendingSpec
       )
 
-      this.addMayorMessage('mayor', `${this.currentPolecat} is now working on your task!\n\nI'll let you know when they make progress or if they get stuck.`)
+      this.addEmperorMessage('emperor', `${this.currentPolecat} is now working on your task!\n\nI'll let you know when they make progress or if they get stuck.`)
 
       if (this.gameScene) {
         this.gameScene.refreshState()
@@ -3132,11 +3214,11 @@ export class UIScene extends Phaser.Scene {
       this.pendingSpec = null
       this.currentPolecat = null
       this.currentProject = null
-      this.mayorState = null
+      this.emperorState = null
 
     } catch (e) {
-      this.addMayorMessage('mayor', `Failed to assign task: ${e.message}\n\nTry again or check if the polecat is available.`)
-      this.mayorState = null
+      this.addEmperorMessage('emperor', `Failed to assign task: ${e.message}\n\nTry again or check if the agent is available.`)
+      this.emperorState = null
     }
   }
 
@@ -3181,9 +3263,9 @@ export class UIScene extends Phaser.Scene {
       this.notificationContainer.setX(width - 320)
     }
 
-    // Village navigator — bottom-left
-    if (this.villageNav) {
-      this.villageNav.setY(height - 200)
+    // Colony navigator — bottom-left
+    if (this.colonyNav) {
+      this.colonyNav.setY(height - 200)
     }
 
     // New project button — bottom-left
@@ -3228,56 +3310,56 @@ export class UIScene extends Phaser.Scene {
     }
   }
 
-  createVillageNavigator() {
-    // Village navigator - small panel to jump between villages
+  createColonyNavigator() {
+    // Colony navigator - small panel to jump between colonies
     const x = 20
     const y = this.cameras.main.height - 200
     const width = 150
 
-    this.villageNav = this.add.container(x, y)
-    this.villageNav.setDepth(100)
+    this.colonyNav = this.add.container(x, y)
+    this.colonyNav.setDepth(100)
 
     // Background
-    this.villageNavBg = this.add.graphics()
-    this.villageNav.add(this.villageNavBg)
+    this.colonyNavBg = this.add.graphics()
+    this.colonyNav.add(this.colonyNavBg)
 
     // Title
-    this.villageNavTitle = this.add.text(width/2, 12, 'VILLAGE', {
+    this.colonyNavTitle = this.add.text(width/2, 12, 'COLONY', {
       font: 'bold 12px Fredoka',
       fill: '#FFFFFF',
       stroke: '#005588',
       strokeThickness: 2
     }).setOrigin(0.5, 0)
-    this.villageNav.add(this.villageNavTitle)
+    this.colonyNav.add(this.colonyNavTitle)
 
-    // Village buttons container
-    this.villageButtons = this.add.container(0, 35)
-    this.villageNav.add(this.villageButtons)
+    // Colony buttons container
+    this.colonyButtons = this.add.container(0, 35)
+    this.colonyNav.add(this.colonyButtons)
 
-    this.updateVillageNavigator()
+    this.updateColonyNavigator()
   }
 
-  updateVillageNavigator() {
-    const villages = this.gameScene?.villages || []
+  updateColonyNavigator() {
+    const colonies = this.gameScene?.colonies || []
     const width = 150
     const buttonHeight = 32
 
     // Clear existing buttons
-    this.villageButtons.removeAll(true)
+    this.colonyButtons.removeAll(true)
 
     // Calculate panel height
-    const panelHeight = 45 + villages.length * (buttonHeight + 5)
+    const panelHeight = 45 + colonies.length * (buttonHeight + 5)
 
     // Redraw background
-    this.villageNavBg.clear()
-    this.drawGlossyPanel(this.villageNavBg, 0, 0, width, panelHeight, 0x0077B6, 12)
+    this.colonyNavBg.clear()
+    this.drawGlossyPanel(this.colonyNavBg, 0, 0, width, panelHeight, 0x0077B6, 12)
 
-    // Add button for each village
-    villages.forEach((village, i) => {
+    // Add button for each colony
+    colonies.forEach((colony, i) => {
       const y = i * (buttonHeight + 5)
 
       const btn = this.add.graphics()
-      const color = village.isHub ? 0x8B4513 : 0x2ECC71
+      const color = colony.isHub ? 0x8B4513 : 0x2ECC71
 
       // Button background
       btn.fillStyle(this.darkenColor(color, 30), 1)
@@ -3290,9 +3372,9 @@ export class UIScene extends Phaser.Scene {
 
       // Status indicator dot (green=all idle, yellow=working, red=stuck)
       const statusDot = this.add.graphics()
-      const villageStatus = this.getVillageStatus(village)
-      const dotColor = villageStatus === 'stuck' ? 0xE74C3C :
-                       villageStatus === 'working' ? 0xF39C12 : 0x2ECC71
+      const colonyStatus = this.getColonyStatus(colony)
+      const dotColor = colonyStatus === 'stuck' ? 0xE74C3C :
+                       colonyStatus === 'working' ? 0xF39C12 : 0x2ECC71
       statusDot.fillStyle(0x000000, 0.3)
       statusDot.fillCircle(20, y + buttonHeight/2 + 1, 5)
       statusDot.fillStyle(dotColor, 1)
@@ -3301,13 +3383,13 @@ export class UIScene extends Phaser.Scene {
       statusDot.fillCircle(18, y + buttonHeight/2 - 2, 2)
 
       // Label (offset to make room for status dot)
-      const label = this.add.text(width/2 + 5, y + buttonHeight/2 - 1, village.name, {
+      const label = this.add.text(width/2 + 5, y + buttonHeight/2 - 1, colony.name, {
         font: 'bold 10px Fredoka',
         fill: '#FFFFFF'
       }).setOrigin(0.5)
 
-      // Agent count — hub shows Mayor + Deacon (2), rigs show polecats
-      const agentCount = village.isHub ? 2 : (village.polecats?.length || 0)
+      // Agent count — hub shows Emperor (1), rigs show agents
+      const agentCount = colony.isHub ? 1 : (colony.polecats?.length || 0)
       const count = this.add.text(width - 20, y + buttonHeight/2 - 1, `${agentCount}`, {
         font: '10px Fredoka',
         fill: '#FFFFFF',
@@ -3345,30 +3427,30 @@ export class UIScene extends Phaser.Scene {
 
       zone.on('pointerup', () => {
         if (this.gameScene) {
-          this.gameScene.panToVillage(village.name)
+          this.gameScene.panToColony(colony.name)
         }
       })
 
-      this.villageButtons.add([btn, statusDot, label, count, zone])
+      this.colonyButtons.add([btn, statusDot, label, count, zone])
     })
 
     // Reposition the navigator based on new height
-    this.villageNav.setY(this.cameras.main.height - panelHeight - 80)
+    this.colonyNav.setY(this.cameras.main.height - panelHeight - 80)
   }
 
-  getVillageStatus(village) {
-    // Get all polecats in this village from game scene
+  getColonyStatus(colony) {
+    // Get all polecats in this colony from game scene
     // units is a Map, so convert to array
     const unitsMap = this.gameScene?.units
     if (!unitsMap) return 'idle'
 
     const units = Array.from(unitsMap.values())
-    const villagePolecats = units.filter(u =>
-      village.polecats?.includes(u.unitName) || village.polecats?.includes(u.id)
+    const colonyPolecats = units.filter(u =>
+      colony.polecats?.includes(u.unitName) || colony.polecats?.includes(u.id)
     )
 
-    if (villagePolecats.some(p => p.status === 'stuck')) return 'stuck'
-    if (villagePolecats.some(p => p.status === 'working')) return 'working'
+    if (colonyPolecats.some(p => p.status === 'stuck')) return 'stuck'
+    if (colonyPolecats.some(p => p.status === 'working')) return 'working'
     return 'idle'
   }
 
@@ -3785,7 +3867,7 @@ export class UIScene extends Phaser.Scene {
       // Step 4: Sling issue if provided
       if (issueId) {
         const cleanIssue = issueId.replace('#', '')
-        await this.api.sling(`${rigName}/polecats/${polecat.name}`, cleanIssue)
+        await this.api.sling(`${rigName}/${polecat.name}`, cleanIssue)
         console.log(`Slung issue: ${cleanIssue}`)
       }
 
@@ -3799,7 +3881,7 @@ export class UIScene extends Phaser.Scene {
 
       await this.showModal({
         title: 'PROJECT CREATED!',
-        message: `${rigName} is ready!\n\nPolecat "${polecat.name}" is standing by.`,
+        message: `${rigName} is ready!\n\nAgent "${polecat.name}" is standing by.`,
         showCancel: false
       })
 
@@ -4110,7 +4192,7 @@ export class UIScene extends Phaser.Scene {
   handleFeedEventClick(event) {
     // Navigate to relevant agent/project
     if (event.rig && this.gameScene) {
-      this.gameScene.panToVillage(event.rig)
+      this.gameScene.panToColony(event.rig)
     }
     if (event.agent) {
       this.statusText.setText(`Viewing: ${event.agent}`)
@@ -4375,7 +4457,7 @@ export class UIScene extends Phaser.Scene {
       if (idlePolecats.length === 0) {
         await this.showModal({
           title: 'NO IDLE AGENTS',
-          message: 'No idle polecats available. Spawn a new one or wait for one to finish.',
+          message: 'No idle agents available. Spawn a new one or wait for one to finish.',
           showCancel: false
         })
         return
@@ -5381,7 +5463,7 @@ export class UIScene extends Phaser.Scene {
   async executeBatchAction(action) {
     if (!this.selectedUnits || this.selectedUnits.length === 0) return
 
-    const agentIds = this.selectedUnits.map(u => u.id || `${u.rig}/polecats/${u.unitName}`)
+    const agentIds = this.selectedUnits.map(u => u.rig ? `${u.rig}/${u.unitName}` : (u.id || u.unitName))
 
     switch (action) {
       case 'stopAll':
@@ -5427,6 +5509,276 @@ export class UIScene extends Phaser.Scene {
     }
 
     this.hideBatchPanel()
+  }
+
+  // ===== OPERATIONS DASHBOARD =====
+
+  async showOperationsDashboard() {
+    const width = this.cameras.main.width
+    const height = this.cameras.main.height
+    const panelWidth = Math.min(520, width - 40)
+    const panelHeight = Math.min(560, height - 40)
+    const headerHeight = 60
+    const contentTop = -panelHeight/2 + headerHeight
+    const contentHeight = panelHeight - headerHeight - 20
+    const THEME = 0xE67E22
+
+    const container = this.add.container(width/2, height/2)
+    container.setDepth(1500)
+
+    // Backdrop
+    const backdrop = this.add.graphics()
+    backdrop.fillStyle(0x000000, 0.6)
+    backdrop.fillRect(-width/2, -height/2, width, height)
+    backdrop.setInteractive(new Phaser.Geom.Rectangle(-width/2, -height/2, width, height), Phaser.Geom.Rectangle.Contains)
+    backdrop.on('pointerup', () => container.destroy())
+
+    // Panel
+    const panel = this.add.graphics()
+    this.drawGlossyPanel(panel, -panelWidth/2, -panelHeight/2, panelWidth, panelHeight, THEME, 20)
+    panel.fillStyle(0xFFFFFF, 0.98)
+    panel.fillRoundedRect(-panelWidth/2 + 10, contentTop, panelWidth - 20, contentHeight, 12)
+
+    // Title
+    const title = this.add.text(0, -panelHeight/2 + 30, 'TEAM OPS', {
+      font: 'bold 22px Fredoka',
+      fill: '#FFFFFF',
+      stroke: '#A04800',
+      strokeThickness: 2
+    }).setOrigin(0.5)
+
+    container.add([backdrop, panel, title])
+
+    // Scrollable content
+    const contentContainer = this.add.container(0, 0)
+    container.add(contentContainer)
+
+    // Mask for scrolling
+    const maskShape = this.add.graphics()
+    maskShape.fillStyle(0xffffff)
+    maskShape.fillRect(
+      width/2 - panelWidth/2 + 10,
+      height/2 + contentTop,
+      panelWidth - 20,
+      contentHeight
+    )
+    maskShape.setVisible(false)
+    contentContainer.setMask(new Phaser.Display.Masks.GeometryMask(this, maskShape))
+
+    const origDestroy = container.destroy.bind(container)
+    container.destroy = () => {
+      maskShape.destroy()
+      origDestroy()
+    }
+
+    // Loading text
+    const loadingText = this.add.text(0, contentTop + contentHeight/2, 'Loading operations data...', {
+      font: '14px Fredoka',
+      fill: '#999999'
+    }).setOrigin(0.5)
+    contentContainer.add(loadingText)
+
+    try {
+      const ops = await this.api.getOperations()
+      loadingText.destroy()
+
+      const innerWidth = panelWidth - 50
+      let yPos = contentTop + 15
+
+      // --- Town Overview badges ---
+      const summary = ops.town?.summary || {}
+      const badges = [
+        { label: 'TEAMS', value: summary.rig_count || 0, color: 0x3498DB },
+        { label: 'AGENTS', value: summary.polecat_count || 0, color: 0x2ECC71 }
+      ]
+
+      const badgeWidth = Math.floor((innerWidth - 15) / 2)
+      badges.forEach((badge, i) => {
+        const bx = -innerWidth/2 + i * (badgeWidth + 5) + badgeWidth/2
+        const bg = this.add.graphics()
+        bg.fillStyle(badge.color, 0.15)
+        bg.fillRoundedRect(bx - badgeWidth/2, yPos, badgeWidth, 44, 8)
+        bg.lineStyle(1, badge.color, 0.4)
+        bg.strokeRoundedRect(bx - badgeWidth/2, yPos, badgeWidth, 44, 8)
+
+        const val = this.add.text(bx, yPos + 14, String(badge.value), {
+          font: 'bold 18px Fredoka',
+          fill: `#${badge.color.toString(16).padStart(6, '0')}`
+        }).setOrigin(0.5)
+
+        const lbl = this.add.text(bx, yPos + 34, badge.label, {
+          font: '9px Fredoka',
+          fill: '#888888'
+        }).setOrigin(0.5)
+
+        contentContainer.add([bg, val, lbl])
+      })
+
+      yPos += 55
+
+      // --- Hub Agents ---
+      const agents = ops.agents || []
+      if (agents.length > 0) {
+        const agentHeader = this.add.text(-innerWidth/2, yPos, 'HUB AGENTS', {
+          font: 'bold 12px Fredoka',
+          fill: '#E67E22'
+        })
+        contentContainer.add(agentHeader)
+        yPos += 20
+
+        agents.forEach(agent => {
+          const dot = this.add.text(-innerWidth/2, yPos, agent.running ? '\u25CF' : '\u25CB', {
+            font: '14px Fredoka',
+            fill: agent.running ? '#2ECC71' : '#E74C3C'
+          })
+          const name = this.add.text(-innerWidth/2 + 18, yPos, `${agent.name}`, {
+            font: '13px Fredoka',
+            fill: '#333333'
+          })
+          const role = this.add.text(-innerWidth/2 + 18 + name.width + 8, yPos, agent.role, {
+            font: '11px Fredoka',
+            fill: '#999999'
+          })
+          const status = this.add.text(innerWidth/2, yPos, agent.running ? 'running' : 'stopped', {
+            font: '11px Fredoka',
+            fill: agent.running ? '#2ECC71' : '#999999'
+          }).setOrigin(1, 0)
+          contentContainer.add([dot, name, role, status])
+          yPos += 22
+        })
+
+        yPos += 10
+      }
+
+      // --- Per-Team Cards ---
+      const rigs = ops.rigs || []
+      if (rigs.length > 0) {
+        const rigHeader = this.add.text(-innerWidth/2, yPos, 'TEAM OPERATIONS', {
+          font: 'bold 12px Fredoka',
+          fill: '#E67E22'
+        })
+        contentContainer.add(rigHeader)
+        yPos += 22
+
+        for (const rig of rigs) {
+          // Team card background
+          const taskSummary = rig.tasks || {}
+          const cardHeight = 70
+          const cardBg = this.add.graphics()
+          cardBg.fillStyle(0xF5F5F5, 1)
+          cardBg.fillRoundedRect(-innerWidth/2, yPos, innerWidth, cardHeight, 8)
+          cardBg.lineStyle(1, 0xDDDDDD, 1)
+          cardBg.strokeRoundedRect(-innerWidth/2, yPos, innerWidth, cardHeight, 8)
+          contentContainer.add(cardBg)
+
+          // Team name + agent count
+          const rigName = this.add.text(-innerWidth/2 + 10, yPos + 8, rig.name, {
+            font: 'bold 14px Fredoka',
+            fill: '#333333'
+          })
+          const pcCount = this.add.text(-innerWidth/2 + 10 + rigName.width + 8, yPos + 10, `${rig.polecat_count} agents`, {
+            font: '11px Fredoka',
+            fill: '#888888'
+          })
+          contentContainer.add([rigName, pcCount])
+
+          // Task summary row
+          const taskY = yPos + 32
+          const pendingBadge = this.add.text(-innerWidth/2 + 10, taskY, `${taskSummary.pending || 0} pending`, {
+            font: '11px Fredoka',
+            fill: '#F39C12'
+          })
+          const inProgressBadge = this.add.text(-innerWidth/2 + 90, taskY, `${taskSummary.in_progress || 0} active`, {
+            font: '11px Fredoka',
+            fill: '#2ECC71'
+          })
+          const completedBadge = this.add.text(-innerWidth/2 + 165, taskY, `${taskSummary.completed || 0} done`, {
+            font: '11px Fredoka',
+            fill: '#3498DB'
+          })
+          contentContainer.add([pendingBadge, inProgressBadge, completedBadge])
+
+          // Agent status row
+          const statusY = yPos + 50
+          const polecats = rig.polecats || []
+          polecats.forEach((pc, pci) => {
+            const statusColor = pc.status === 'working' ? '#2ECC71' : pc.status === 'stuck' ? '#E74C3C' : '#95A5A6'
+            const dot = this.add.text(-innerWidth/2 + 10 + pci * 20, statusY, '\u25CF', {
+              font: '10px Fredoka', fill: statusColor
+            })
+            contentContainer.add(dot)
+          })
+
+          yPos += cardHeight + 10
+        }
+      } else {
+        const noRigs = this.add.text(0, yPos + 10, 'No teams registered', {
+          font: '14px Fredoka',
+          fill: '#999999'
+        }).setOrigin(0.5, 0)
+        contentContainer.add(noRigs)
+        yPos += 40
+      }
+
+      // --- Costs Section ---
+      yPos += 5
+      const costsHeader = this.add.text(-innerWidth/2, yPos, 'COSTS', {
+        font: 'bold 12px Fredoka',
+        fill: '#E67E22'
+      })
+      contentContainer.add(costsHeader)
+      yPos += 22
+
+      const costs = ops.costs || {}
+      const todayCost = costs.today
+      const weekCost = costs.week
+
+      const formatCost = (data) => {
+        if (!data) return 'No data yet'
+        if (data.total_cost !== undefined) return `$${Number(data.total_cost).toFixed(2)}`
+        if (data.total !== undefined) return `$${Number(data.total).toFixed(2)}`
+        if (data.cost !== undefined) return `$${Number(data.cost).toFixed(2)}`
+        return JSON.stringify(data).slice(0, 40)
+      }
+
+      const costCardBg = this.add.graphics()
+      costCardBg.fillStyle(0xF5F5F5, 1)
+      costCardBg.fillRoundedRect(-innerWidth/2, yPos, innerWidth, 44, 8)
+      contentContainer.add(costCardBg)
+
+      const todayLabel = this.add.text(-innerWidth/2 + 10, yPos + 8, 'Today:', {
+        font: '12px Fredoka', fill: '#555555'
+      })
+      const todayVal = this.add.text(-innerWidth/2 + 65, yPos + 8, formatCost(todayCost), {
+        font: 'bold 12px Fredoka', fill: '#333333'
+      })
+      const weekLabel = this.add.text(-innerWidth/2 + 10, yPos + 26, 'This Week:', {
+        font: '12px Fredoka', fill: '#555555'
+      })
+      const weekVal = this.add.text(-innerWidth/2 + 85, yPos + 26, formatCost(weekCost), {
+        font: 'bold 12px Fredoka', fill: '#333333'
+      })
+      contentContainer.add([todayLabel, todayVal, weekLabel, weekVal])
+      yPos += 55
+
+      // Enable scrolling if content overflows
+      const totalContentHeight = yPos - contentTop
+      if (totalContentHeight > contentHeight) {
+        const maxScroll = totalContentHeight - contentHeight + 10
+        const wheelHandler = (pointer, gameObjects, deltaX, deltaY) => {
+          if (!container.active) return
+          contentContainer.y = Phaser.Math.Clamp(contentContainer.y - deltaY, -maxScroll, 0)
+        }
+        this.input.on('wheel', wheelHandler)
+        const origDestroy2 = container.destroy
+        container.destroy = () => {
+          this.input.off('wheel', wheelHandler)
+          origDestroy2.call(container)
+        }
+      }
+    } catch(e) {
+      loadingText.setText(`Error: ${e.message}`)
+    }
   }
 
   // ===== PROJECT TEMPLATES =====

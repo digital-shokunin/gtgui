@@ -1,12 +1,12 @@
 import express from 'express'
 import cors from 'cors'
 import { createServer } from 'http'
-import { execSync, exec } from 'child_process'
 import { fileURLToPath } from 'url'
 import { dirname, join } from 'path'
 import { writeFileSync, readFileSync, mkdirSync, existsSync } from 'fs'
-import { setupAuth, getSessionMiddleware } from './src/server/auth.js'
+import { setupAuth, getSessionMiddleware, requireAuth } from './src/server/auth.js'
 import { MultiplayerServer } from './src/server/multiplayer.js'
+import { AgentTeamsBackend } from './src/server/backend.js'
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = dirname(__filename)
@@ -29,26 +29,41 @@ const sessionMiddleware = getSessionMiddleware()
 app.use(sessionMiddleware)
 const { users: authUsers } = setupAuth(app)
 
+// Require auth on all API routes except public ones
+const PUBLIC_API = ['/config', '/me', '/github/webhook']
+app.use('/api', (req, res, next) => {
+  if (PUBLIC_API.includes(req.path)) return next()
+  requireAuth(req, res, next)
+})
+
 // Setup multiplayer WebSocket
 const multiplayer = new MultiplayerServer(httpServer, sessionMiddleware)
 
-const GT_PATH = process.env.GT_PATH || '/opt/homebrew/bin/gt'
-const TOWN_ROOT = process.env.TOWN_ROOT || `${process.env.HOME}/gt`
+// ===== NEW: Agent Teams Backend =====
+const GTGUI_DATA = process.env.GTGUI_DATA || join(process.env.HOME, '.gtgui')
+mkdirSync(GTGUI_DATA, { recursive: true })
+
+const backend = new AgentTeamsBackend({
+  claudePath: process.env.CLAUDE_PATH || 'claude',
+  teamsRoot: process.env.TEAMS_ROOT,
+  tasksRoot: process.env.TASKS_ROOT,
+})
 
 // Settings storage
-const SETTINGS_FILE = join(TOWN_ROOT, 'settings.json')
+const SETTINGS_FILE = join(GTGUI_DATA, 'settings.json')
 const DEFAULT_SETTINGS = {
-  stuckTokenThreshold: 25000,      // tokens before marked stuck
+  stuckTokenThreshold: 25000,
   stuckTimeThreshold: 1800000,     // 30 minutes in ms
-  warningTokenThreshold: 20000,    // 80% - yellow warning
-  warningTimeThreshold: 1440000,   // 24 minutes - 80%
+  warningTokenThreshold: 20000,
+  warningTimeThreshold: 1440000,   // 24 minutes
   enableSounds: true,
   enableNotifications: true,
-  tokenCostRate: 0.003             // $ per 1000 tokens (default Claude rate)
+  tokenCostRate: 0.003,
+  emperorName: 'Tiberius Claudius'  // Default Emperor name — user can change
 }
 
 // ===== ACTIVITY FEED =====
-const ACTIVITY_FEED_FILE = join(TOWN_ROOT, 'activity_feed.json')
+const ACTIVITY_FEED_FILE = join(GTGUI_DATA, 'activity_feed.json')
 const MAX_FEED_EVENTS = 100
 let activityFeed = []
 
@@ -66,10 +81,6 @@ function loadActivityFeed() {
 
 function saveActivityFeed() {
   try {
-    const dir = dirname(ACTIVITY_FEED_FILE)
-    if (!existsSync(dir)) {
-      mkdirSync(dir, { recursive: true })
-    }
     writeFileSync(ACTIVITY_FEED_FILE, JSON.stringify(activityFeed, null, 2))
   } catch (e) {
     console.error('Failed to save activity feed:', e.message)
@@ -87,24 +98,20 @@ function addActivityEvent(type, data, user = null) {
 
   activityFeed.unshift(event)
 
-  // Keep only last MAX_FEED_EVENTS
   if (activityFeed.length > MAX_FEED_EVENTS) {
     activityFeed = activityFeed.slice(0, MAX_FEED_EVENTS)
   }
 
   saveActivityFeed()
-
-  // Broadcast to all connected clients
   multiplayer.broadcastFeedEvent(event)
 
   return event
 }
 
-// Load activity feed on startup
 loadActivityFeed()
 
 // ===== TASK QUEUE =====
-const TASK_QUEUE_FILE = join(TOWN_ROOT, 'task_queue.json')
+const TASK_QUEUE_FILE = join(GTGUI_DATA, 'task_queue.json')
 let taskQueue = []
 
 function loadTaskQueue() {
@@ -121,21 +128,16 @@ function loadTaskQueue() {
 
 function saveTaskQueue() {
   try {
-    const dir = dirname(TASK_QUEUE_FILE)
-    if (!existsSync(dir)) {
-      mkdirSync(dir, { recursive: true })
-    }
     writeFileSync(TASK_QUEUE_FILE, JSON.stringify(taskQueue, null, 2))
   } catch (e) {
     console.error('Failed to save task queue:', e.message)
   }
 }
 
-// Load task queue on startup
 loadTaskQueue()
 
 // ===== COST TRACKING =====
-const COST_FILE = join(TOWN_ROOT, 'cost_history.json')
+const COST_FILE = join(GTGUI_DATA, 'cost_history.json')
 let costHistory = { daily: {}, byAgent: {}, byProject: {} }
 
 function loadCostHistory() {
@@ -152,10 +154,6 @@ function loadCostHistory() {
 
 function saveCostHistory() {
   try {
-    const dir = dirname(COST_FILE)
-    if (!existsSync(dir)) {
-      mkdirSync(dir, { recursive: true })
-    }
     writeFileSync(COST_FILE, JSON.stringify(costHistory, null, 2))
   } catch (e) {
     console.error('Failed to save cost history:', e.message)
@@ -165,39 +163,25 @@ function saveCostHistory() {
 function recordTokenUsage(agent, project, tokens) {
   const today = new Date().toISOString().split('T')[0]
 
-  // Daily totals
-  if (!costHistory.daily[today]) {
-    costHistory.daily[today] = 0
-  }
+  if (!costHistory.daily[today]) costHistory.daily[today] = 0
   costHistory.daily[today] += tokens
 
-  // By agent
-  if (!costHistory.byAgent[agent]) {
-    costHistory.byAgent[agent] = { total: 0, daily: {} }
-  }
+  if (!costHistory.byAgent[agent]) costHistory.byAgent[agent] = { total: 0, daily: {} }
   costHistory.byAgent[agent].total += tokens
-  if (!costHistory.byAgent[agent].daily[today]) {
-    costHistory.byAgent[agent].daily[today] = 0
-  }
+  if (!costHistory.byAgent[agent].daily[today]) costHistory.byAgent[agent].daily[today] = 0
   costHistory.byAgent[agent].daily[today] += tokens
 
-  // By project
-  if (!costHistory.byProject[project]) {
-    costHistory.byProject[project] = { total: 0, daily: {} }
-  }
+  if (!costHistory.byProject[project]) costHistory.byProject[project] = { total: 0, daily: {} }
   costHistory.byProject[project].total += tokens
-  if (!costHistory.byProject[project].daily[today]) {
-    costHistory.byProject[project].daily[today] = 0
-  }
+  if (!costHistory.byProject[project].daily[today]) costHistory.byProject[project].daily[today] = 0
   costHistory.byProject[project].daily[today] += tokens
 
   saveCostHistory()
 }
 
-// Load cost history on startup
 loadCostHistory()
 
-// Load settings from file or use defaults
+// Load settings
 function loadSettings() {
   try {
     if (existsSync(SETTINGS_FILE)) {
@@ -210,13 +194,8 @@ function loadSettings() {
   return { ...DEFAULT_SETTINGS }
 }
 
-// Save settings to file
 function saveSettings(settings) {
   try {
-    const dir = dirname(SETTINGS_FILE)
-    if (!existsSync(dir)) {
-      mkdirSync(dir, { recursive: true })
-    }
     writeFileSync(SETTINGS_FILE, JSON.stringify(settings, null, 2))
     return true
   } catch (e) {
@@ -227,715 +206,432 @@ function saveSettings(settings) {
 
 let currentSettings = loadSettings()
 
-// Check for stuck agents based on token and time thresholds
-function checkForStuckAgents() {
-  const now = Date.now()
-  const rigs = listRigs()
-  const notifications = []
+// ===== STUCK DETECTION (replaces pollWitnessAlerts) =====
+function checkStuckTeammates() {
+  const alerts = backend.checkStuck(currentSettings)
 
-  for (const rig of rigs) {
-    const polecatsPath = join(TOWN_ROOT, rig.name, 'polecats')
+  for (const alert of alerts) {
+    multiplayer.broadcastNotification({
+      type: 'stuck',
+      agent: alert.agent,
+      rig: alert.rig,
+      message: alert.type === 'session_dead'
+        ? `${alert.agent} session died while working on: ${alert.task || 'task'}`
+        : `${alert.agent} appears stuck on: ${alert.task || 'task'}`
+    })
 
-    try {
-      const dirs = execSync(`ls -1 "${polecatsPath}" 2>/dev/null || true`, {
-        encoding: 'utf-8'
-      }).trim()
+    addActivityEvent('agent_stuck', {
+      agent: alert.agent,
+      rig: alert.rig,
+      reason: alert.type
+    })
+  }
+}
 
-      if (!dirs) continue
+setInterval(checkStuckTeammates, 30000)
 
-      for (const name of dirs.split('\n').filter(Boolean)) {
-        const statusFile = join(polecatsPath, name, 'status.json')
-
-        try {
-          if (!existsSync(statusFile)) continue
-
-          const content = readFileSync(statusFile, 'utf-8')
-          const status = JSON.parse(content)
-
-          // Only check working agents
-          if (status.status !== 'working') continue
-
-          const assignedAt = status.assignedAt ? new Date(status.assignedAt).getTime() : now
-          const elapsed = now - assignedAt
-          const tokensUsed = status.tokensUsed || 0
-
-          // Check if session is actually alive
-          const sessionAlive = isSessionAlive(rig.name, name)
-
-          // Check if either threshold exceeded, or session died
-          const timeExceeded = elapsed > currentSettings.stuckTimeThreshold
-          const tokensExceeded = tokensUsed > currentSettings.stuckTokenThreshold
-          const sessionDead = !sessionAlive && elapsed > 10000  // Give 10s grace period for startup
-
-          if (timeExceeded || tokensExceeded || sessionDead) {
-            // Mark as stuck
-            status.status = 'stuck'
-            status.stuckReason = sessionDead ? 'session_dead' : (timeExceeded ? 'time' : 'tokens')
-            status.stuckAt = new Date().toISOString()
-            writeFileSync(statusFile, JSON.stringify(status, null, 2))
-
-            notifications.push({
-              type: 'stuck',
-              agent: name,
-              rig: rig.name,
-              reason: status.stuckReason,
-              elapsed,
-              tokensUsed,
-              message: sessionDead
-                ? `${name} session died (no tmux session found)`
-                : timeExceeded
-                  ? `${name} has been working for over ${Math.round(elapsed / 60000)} minutes`
-                  : `${name} has used over ${tokensUsed.toLocaleString()} tokens`
-            })
-
-            // Add to activity feed
-            addActivityEvent('agent_stuck', {
-              agent: name,
-              rig: rig.name,
-              reason: status.stuckReason,
-              elapsed,
-              tokensUsed
-            })
-          }
-          // Check for warning thresholds (80%)
-          else {
-            const timeWarning = elapsed > currentSettings.warningTimeThreshold
-            const tokenWarning = tokensUsed > currentSettings.warningTokenThreshold
-
-            if ((timeWarning || tokenWarning) && !status.warningNotified) {
-              status.warningNotified = true
-              writeFileSync(statusFile, JSON.stringify(status, null, 2))
-
-              notifications.push({
-                type: 'warning',
-                agent: name,
-                rig: rig.name,
-                elapsed,
-                tokensUsed,
-                message: `${name} is approaching limits (${Math.round(elapsed / 60000)}min / ${tokensUsed} tokens)`
-              })
-            }
-          }
-        } catch (e) {
-          // Parse error, skip this polecat
-        }
+// ===== COST SYNC: Periodically read session costs from backend =====
+setInterval(() => {
+  for (const team of backend.listTeams()) {
+    const teammates = backend.getTeammates(team.name)
+    for (const t of teammates) {
+      const cost = backend.getSessionCost(team.name, t.name)
+      if (cost.inputTokens > 0 || cost.outputTokens > 0) {
+        recordTokenUsage(t.name, team.name, cost.inputTokens + cost.outputTokens)
       }
-    } catch (e) {
-      // No polecats directory
     }
   }
+}, 60000)
 
-  // Broadcast notifications
-  for (const notification of notifications) {
-    multiplayer.broadcastNotification(notification)
-  }
-
-  return notifications
-}
-
-// Run stuck detection every 30 seconds
-setInterval(checkForStuckAgents, 30000)
-
-// Helper to run gt commands
-function gt(args, cwd = TOWN_ROOT) {
-  try {
-    const result = execSync(`${GT_PATH} ${args}`, {
-      cwd,
-      encoding: 'utf-8',
-      timeout: 30000,
-      shell: true,  // Use default shell
-      env: { ...process.env, GT_TOWN_ROOT: TOWN_ROOT }
-    })
-    return result
-  } catch (e) {
-    console.error(`gt ${args} failed:`, e.message)
-    return null
-  }
-}
-
-// Parse agent ID string into { rigName, polecatName } — searches all rigs if needed
+// ===== HELPER: Parse agent ID =====
+// New format: "teamName/memberName" (no more /polecats/)
+// Also handles legacy "teamName/polecats/memberName" for backwards compat
 function parseAgentId(agentId) {
   const parts = agentId.split('/')
-  let rigName, polecatName
-  if (parts.length >= 3) {
-    rigName = parts[0]
-    polecatName = parts[parts.length - 1]
+  if (parts.length >= 3 && parts[1] === 'polecats') {
+    // Legacy format: rig/polecats/name
+    return { teamName: parts[0], memberName: parts[2] }
+  } else if (parts.length === 2) {
+    // New format: team/name
+    return { teamName: parts[0], memberName: parts[1] }
   } else {
-    polecatName = agentId
-    // Search all rigs for this polecat
-    const rigs = listRigs()
-    for (const rig of rigs) {
-      const statusPath = join(TOWN_ROOT, rig.name, 'polecats', polecatName, 'status.json')
-      if (existsSync(statusPath)) {
-        rigName = rig.name
-        break
+    // Just a name — search all teams
+    const name = parts[0]
+    for (const team of backend.listTeams()) {
+      const teammates = backend.getTeammates(team.name)
+      if (teammates.find(t => t.name === name)) {
+        return { teamName: team.name, memberName: name }
       }
     }
-  }
-  return { rigName, polecatName }
-}
-
-// Check if a tmux session is alive for a given rig/polecat
-function isSessionAlive(rigName, polecatName) {
-  try {
-    const result = gt(`session status ${rigName}/${polecatName}`)
-    if (result) {
-      // gt session status returns text like "State: ● running" or "State: ○ stopped"
-      return result.includes('running')
-    }
-  } catch {
-    // Fallback: check tmux directly
-    try {
-      execSync(`tmux has-session -t "${polecatName}" 2>/dev/null`, {
-        encoding: 'utf-8',
-        timeout: 5000,
-        shell: true
-      })
-      return true
-    } catch {
-      return false
-    }
-  }
-  return false
-}
-
-// Parse JSON output from gt commands
-function gtJson(args, cwd = TOWN_ROOT) {
-  const result = gt(`${args} --json`, cwd)
-  if (!result) return null
-  try {
-    return JSON.parse(result)
-  } catch {
-    return null
+    return { teamName: null, memberName: name }
   }
 }
 
-// Helper to list rigs from directory
-function listRigs() {
-  try {
-    // Get registered rigs from gt (source of truth)
-    const registered = gtJson('rig list') || []
-    const registeredNames = new Set(registered.map(r => r.name))
+// ===== API ENDPOINTS =====
 
-    const dirs = execSync(`ls -1 "${TOWN_ROOT}" 2>/dev/null || true`, {
-      encoding: 'utf-8'
-    }).trim()
-
-    if (!dirs) return []
-
-    // Only include directories that have a polecats/ subdirectory AND are registered with gt
-    const rigs = []
-    for (const name of dirs.split('\n').filter(Boolean)) {
-      if (name.startsWith('.')) continue
-      const polecatsPath = join(TOWN_ROOT, name, 'polecats')
-      if (existsSync(polecatsPath) && registeredNames.has(name)) {
-        rigs.push({ name, path: join(TOWN_ROOT, name) })
-      }
-    }
-    return rigs
-  } catch (e) {
-    return []
-  }
-}
-
-// GET /api/config - Client configuration (production flag, etc.)
+// GET /api/config
 app.get('/api/config', (req, res) => {
   res.json({
     production: process.env.NODE_ENV === 'production',
-    version: '1.0.0'
+    version: '2.0.0'
   })
 })
 
-// GET /api/status - Overall town status
+// GET /api/status - Overall status (same response shape for frontend compat)
 app.get('/api/status', (req, res) => {
   const status = {}
 
-  // Get rig list from directory
-  const rigs = listRigs()
-  status.rigs = rigs
+  const teams = backend.listTeams()
+  status.rigs = teams
 
-  // Get convoy status (skip if gt doesn't support it)
-  status.activeConvoys = 0
-  status.convoys = []
-
-  // Get polecats across all rigs
   status.polecats = []
-  for (const rig of rigs) {
-    const polecats = getPolecatsForRig(rig.name)
-    status.polecats.push(...polecats)
+  let activeTasks = 0
+  for (const team of teams) {
+    const teammates = backend.getTeammates(team.name)
+    status.polecats.push(...teammates)
+    const tasks = backend.getTasksForTeam(team.name)
+    activeTasks += tasks.filter(t => t.status === 'in_progress').length
   }
 
-  // Placeholder for tokens (would come from costs)
+  status.activeTasks = activeTasks
   status.tokens = 0
   status.openIssues = status.polecats.filter(p => p.status === 'stuck').length
 
-  // Broadcast state update to connected clients
   multiplayer.broadcastStateUpdate(status)
-
   res.json(status)
 })
 
-// GET /api/rigs - List all rigs
+// GET /api/rigs - List all teams (kept as /rigs for frontend compat)
 app.get('/api/rigs', (req, res) => {
-  const rigs = listRigs()
-  res.json(rigs)
+  const teams = backend.listTeams()
+  res.json(teams)
 })
 
-// POST /api/rigs - Create a new rig
+// POST /api/rigs - Create a new team
 app.post('/api/rigs', (req, res) => {
-  const { name, gitUrl } = req.body
+  const { name } = req.body
   if (!name) {
-    return res.status(400).json({ error: 'Rig name required' })
+    return res.status(400).json({ error: 'Team name required' })
   }
 
-  // Validate name — gt rejects hyphens, dots, and spaces (reserved for agent ID parsing)
   if (!/^[a-zA-Z0-9_]+$/.test(name)) {
-    return res.status(400).json({ error: 'Invalid rig name. Use alphanumeric or underscores only (no hyphens, dots, or spaces).' })
+    return res.status(400).json({ error: 'Invalid team name. Use alphanumeric or underscores only.' })
   }
 
   try {
-    if (gitUrl) {
-      // Use gt rig add to properly register with git URL
-      const result = gt(`rig add ${name} "${gitUrl}"`)
-      if (result === null) {
-        // Fallback: create directory manually if gt rig add fails
-        console.warn(`gt rig add failed for ${name}, falling back to mkdir`)
-        const rigPath = join(TOWN_ROOT, name)
-        execSync(`mkdir -p "${rigPath}"`, { encoding: 'utf-8', shell: true })
-      }
-    } else {
-      // No git URL — create directory, then adopt it as a rig
-      const rigPath = join(TOWN_ROOT, name)
-      execSync(`mkdir -p "${rigPath}"`, { encoding: 'utf-8', shell: true })
-      // Try to register with gt (non-fatal if it fails)
-      const adoptResult = gt(`rig add ${name} --adopt --force`)
-      if (adoptResult === null) {
-        console.warn(`gt rig add --adopt failed for ${name} (non-fatal)`)
-      }
-    }
+    backend.createTeam(name)
 
-    // Broadcast new rig to all connected users
     multiplayer.broadcastStateUpdate({ event: 'rig:created', rig: name })
-
-    // Add to activity feed
-    addActivityEvent('project_created', {
-      project: name
-    }, req.session?.passport?.user)
+    addActivityEvent('project_created', { project: name }, req.session?.passport?.user)
 
     res.json({ success: true, name })
   } catch (e) {
-    console.error('Failed to create rig:', e.message)
-    res.status(500).json({ error: 'Failed to create rig' })
+    console.error('Failed to create team:', e.message)
+    res.status(500).json({ error: 'Failed to create team' })
   }
 })
 
-// POST /api/rigs/:name/clone - Clone a repo into a rig
-app.post('/api/rigs/:name/clone', (req, res) => {
-  const { name } = req.params
-  const { repo, branch } = req.body
-
-  if (!repo) {
-    return res.status(400).json({ error: 'Repository URL required' })
-  }
-
-  // Extract repo name from URL for subdirectory
-  const repoName = repo.split('/').pop().replace('.git', '') || 'repo'
-
-  // Ensure rig directory exists
-  const rigPath = join(TOWN_ROOT, name)
-  const clonePath = join(rigPath, repoName)
-
-  try {
-    execSync(`mkdir -p "${rigPath}"`, { encoding: 'utf-8', shell: true })
-  } catch (e) {
-    console.error('Failed to create rig directory:', e.message)
-    return res.status(500).json({ error: 'Failed to create rig directory' })
-  }
-
-  // Check if clone path already exists
-  try {
-    const exists = execSync(`test -d "${clonePath}" && echo "exists" || echo "no"`, {
-      encoding: 'utf-8',
-      shell: true
-    }).trim()
-
-    if (exists === 'exists') {
-      // Directory exists - check if it's a git repo and pull instead
-      try {
-        execSync(`cd "${clonePath}" && git pull`, {
-          encoding: 'utf-8',
-          timeout: 60000,
-          shell: true
-        })
-        multiplayer.broadcastStateUpdate({ event: 'repo:updated', rig: name, repo })
-        return res.json({ success: true, repo, action: 'pulled' })
-      } catch (pullErr) {
-        // Pull failed, remove and re-clone
-        execSync(`rm -rf "${clonePath}"`, { encoding: 'utf-8', shell: true })
-      }
-    }
-  } catch (e) {
-    // Directory doesn't exist, proceed with clone
-  }
-
-  // Try gt rig add first (proper registration + clone), fallback to git clone
-  const branchArg = branch ? `--branch ${branch}` : ''
-  let registered = false
-
-  // Try registering as a proper gt rig with the repo URL
-  const rigAddResult = gt(`rig add ${name} "${repo}" ${branchArg}`)
-  if (rigAddResult !== null) {
-    registered = true
-  } else {
-    // Fallback: gt clone into rig directory
-    let result = gt(`clone ${repo} ${branchArg}`, rigPath)
-
-    // Final fallback: direct git clone
-    if (result === null) {
-      try {
-        const gitBranchArg = branch ? `-b ${branch}` : ''
-        result = execSync(`git clone ${gitBranchArg} "${repo}"`, {
-          cwd: rigPath,
-          encoding: 'utf-8',
-          timeout: 120000,  // 2 min timeout for large repos
-          shell: true
-        })
-      } catch (e) {
-        console.error('Git clone failed:', e.message)
-        return res.status(500).json({ error: `Failed to clone: ${e.message}` })
-      }
-    }
-
-    // Try to adopt the rig if clone worked but gt rig add didn't
-    if (!registered) {
-      const adoptResult = gt(`rig add ${name} --adopt --url "${repo}"`)
-      if (adoptResult !== null) registered = true
-    }
-  }
-
-  multiplayer.broadcastStateUpdate({ event: 'repo:cloned', rig: name, repo, registered })
-
-  // Add to activity feed
-  addActivityEvent('repo_cloned', {
-    project: name,
-    repo
-  }, req.session?.passport?.user)
-
-  res.json({ success: true, repo, registered })
-})
-
-// POST /api/rigs/:name/polecats - Spawn a new polecat in a rig
-app.post('/api/rigs/:name/polecats', (req, res) => {
-  const { name } = req.params
-  const { polecatName } = req.body
-
-  const pcName = polecatName || `polecat-${Date.now()}`
-  const rigPath = join(TOWN_ROOT, name)
-  const polecatPath = join(rigPath, 'polecats', pcName)
-
-  // Create polecat directory (gt polecat spawn doesn't exist)
-  try {
-    // Create polecat directory and status file
-    if (!existsSync(polecatPath)) {
-      mkdirSync(polecatPath, { recursive: true })
-    }
-    const initialStatus = {
-      status: 'idle',
-      created: new Date().toISOString()
-    }
-    writeFileSync(join(polecatPath, 'status.json'), JSON.stringify(initialStatus, null, 2))
-    multiplayer.broadcastStateUpdate({ event: 'polecat:spawned', rig: name, polecat: pcName })
-
-    // Add to activity feed
-    addActivityEvent('agent_spawned', {
-      agent: pcName,
-      rig: name
-    }, req.session?.passport?.user)
-
-    res.json({ success: true, name: pcName })
-  } catch (e) {
-    console.error('Failed to spawn polecat:', e.message)
-    res.status(500).json({ error: 'Failed to spawn polecat' })
-  }
-})
-
-// GET /api/rigs/:name/polecats - Get polecats for a rig
-app.get('/api/rigs/:name/polecats', (req, res) => {
-  const polecats = getPolecatsForRig(req.params.name)
-  res.json(polecats)
-})
-
-// DELETE /api/rigs/:name - Remove a rig
+// DELETE /api/rigs/:name - Delete a team
 app.delete('/api/rigs/:name', (req, res) => {
   const { name } = req.params
-  const deleteFiles = req.query.deleteFiles === 'true'
-
-  const rigPath = join(TOWN_ROOT, name)
-
-  if (!existsSync(rigPath)) {
-    return res.status(404).json({ error: 'Rig not found' })
-  }
 
   try {
-    // Unregister from Gas Town (kills sessions with --force)
-    try {
-      gt(`rig remove ${name} --force`)
-    } catch (e) {
-      console.warn(`gt rig remove warning: ${e.message}`)
-    }
-
-    // Optionally delete files on disk
-    if (deleteFiles) {
-      execSync(`rm -rf "${rigPath}"`, { encoding: 'utf-8', shell: true })
-    }
-
+    backend.deleteTeam(name)
     multiplayer.broadcastStateUpdate({ event: 'rig:deleted', rig: name })
-    res.json({ success: true, deleted: name, filesDeleted: deleteFiles })
+    res.json({ success: true, deleted: name })
   } catch (e) {
-    console.error('Failed to remove rig:', e.message)
-    res.status(500).json({ error: 'Failed to remove rig' })
+    console.error('Failed to delete team:', e.message)
+    res.status(500).json({ error: 'Failed to delete team' })
   }
 })
 
-// GET /api/convoys - List convoys
-app.get('/api/convoys', (req, res) => {
-  const convoys = gtJson('convoy list --all') || []
-  res.json(convoys)
-})
+// POST /api/rigs/:name/polecats - Spawn a new teammate
+app.post('/api/rigs/:name/polecats', (req, res) => {
+  const { name } = req.params
+  const { polecatName, cwd } = req.body
 
-// GET /api/convoys/:id - Convoy details
-app.get('/api/convoys/:id', (req, res) => {
-  const status = gtJson(`convoy status ${req.params.id}`)
-  if (status) {
-    res.json(status)
-  } else {
-    res.status(404).json({ error: 'Convoy not found' })
+  const memberName = polecatName || `agent_${Date.now()}`
+
+  try {
+    const result = backend.spawnTeammate(name, memberName, cwd || null)
+
+    multiplayer.broadcastStateUpdate({ event: 'polecat:spawned', rig: name, polecat: memberName })
+    addActivityEvent('agent_spawned', { agent: memberName, rig: name }, req.session?.passport?.user)
+
+    res.json({ success: true, name: memberName })
+  } catch (e) {
+    console.error('Failed to spawn teammate:', e.message)
+    res.status(500).json({ error: 'Failed to spawn agent' })
   }
 })
 
-// POST /api/sling - Sling work to agent (calls real gt sling to start Claude session)
+// GET /api/rigs/:name/polecats - Get teammates for a team
+app.get('/api/rigs/:name/polecats', (req, res) => {
+  const teammates = backend.getTeammates(req.params.name)
+  res.json(teammates)
+})
+
+// POST /api/sling - Assign work to agent
 app.post('/api/sling', (req, res) => {
   const { agent, issue } = req.body
   if (!agent || !issue) {
     return res.status(400).json({ error: 'Missing agent or issue' })
   }
 
-  // Parse agent path (e.g., "rigname/polecats/polecatname" or just "polecatname")
-  const parts = agent.split('/')
-  let rigName, polecatName
-  if (parts.length >= 3) {
-    rigName = parts[0]
-    polecatName = parts[parts.length - 1]
-  } else {
-    polecatName = agent
-    rigName = 'default'
+  const { teamName, memberName } = parseAgentId(agent)
+
+  if (!teamName) {
+    return res.status(404).json({ error: 'Agent not found in any team' })
   }
 
-  // Write status immediately so UI reflects the change
-  const statusPath = join(TOWN_ROOT, rigName, 'polecats', polecatName, 'status.json')
-  const statusDir = dirname(statusPath)
-  if (!existsSync(statusDir)) {
-    mkdirSync(statusDir, { recursive: true })
-  }
-
-  const status = {
-    status: 'working',
-    issue: issue,
-    assignedAt: new Date().toISOString(),
-    progress: 0
-  }
-  writeFileSync(statusPath, JSON.stringify(status, null, 2))
-
-  // Start a Claude session for the polecat
-  // gt sling expects bead IDs, so we use gt session start + tmux prompt injection
-  const sessionResult = gt(`session start ${rigName}/${polecatName}`)
-  if (sessionResult === null) {
-    console.error(`gt session start failed for ${rigName}/${polecatName}`)
-    const failedStatus = {
-      status: 'idle',
-      issue: issue,
-      slingError: 'gt session start failed',
-      failedAt: new Date().toISOString()
+  // Ensure session is alive; start one if not
+  if (!backend.isTeammateAlive(teamName, memberName)) {
+    try {
+      backend.spawnTeammate(teamName, memberName)
+    } catch (e) {
+      return res.status(500).json({ error: 'Failed to start agent session' })
     }
-    writeFileSync(statusPath, JSON.stringify(failedStatus, null, 2))
-    return res.status(500).json({ error: 'Failed to start agent session' })
   }
 
-  // Accept the bypass permissions warning and inject the task prompt
-  // gt session creates tmux sessions named {prefix}-{polecatName}
-  // We need to detect the tmux session name and send keystrokes
-  try {
-    const sessions = execSync('tmux list-sessions -F "#{session_name}"', {
-      encoding: 'utf-8', timeout: 5000, shell: true
-    }).trim().split('\n')
-    const tmuxSession = sessions.find(s => s.includes(polecatName))
-    if (tmuxSession) {
-      // Wait for Claude to render the bypass warning
-      setTimeout(() => {
-        try {
-          // Press Down to select "Yes, I accept", then Enter
-          execSync(`tmux send-keys -t "${tmuxSession}" Down`, { timeout: 3000, shell: true })
-          setTimeout(() => {
-            try {
-              execSync(`tmux send-keys -t "${tmuxSession}" Enter`, { timeout: 3000, shell: true })
-              // Wait for Claude to initialize, then type the task
-              setTimeout(() => {
-                try {
-                  const escaped = issue.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\$/g, '\\$').replace(/`/g, '\\`')
-                  execSync(`tmux send-keys -t "${tmuxSession}" "${escaped}" Enter`, { timeout: 5000, shell: true })
-                  console.log(`Injected task into ${tmuxSession}: ${issue}`)
-                } catch (e) {
-                  console.error(`Failed to inject task into ${tmuxSession}:`, e.message)
-                }
-              }, 5000)
-            } catch (e) {
-              console.error(`Failed to send Enter to ${tmuxSession}:`, e.message)
-            }
-          }, 500)
-        } catch (e) {
-          console.error(`Failed to send Down to ${tmuxSession}:`, e.message)
-        }
-      }, 2000)
-    } else {
-      console.warn(`Could not find tmux session for ${polecatName}`)
-    }
-  } catch (e) {
-    console.warn('Could not list tmux sessions:', e.message)
-  }
-
-  // Broadcast status update
-  multiplayer.broadcastStateUpdate({
-    event: 'polecat:working',
-    rig: rigName,
-    polecat: polecatName,
-    issue: issue
+  // Create an Agent Teams task and assign it
+  const task = backend.createTask(teamName, {
+    subject: issue,
+    description: issue,
+    owner: memberName,
+    activeForm: `Working on: ${issue}`
   })
 
-  // Add to activity feed
+  // Send task to the agent session
+  backend.sendToSession(teamName, memberName, issue)
+
+  multiplayer.broadcastStateUpdate({
+    event: 'polecat:working',
+    rig: teamName,
+    polecat: memberName,
+    issue
+  })
+
   addActivityEvent('task_assigned', {
     task: issue,
-    agent: polecatName,
-    rig: rigName
+    agent: memberName,
+    rig: teamName
   }, req.session?.passport?.user)
 
-  res.json({ success: true, message: `Assigned ${issue} to ${polecatName}`, status })
+  res.json({ success: true, message: `Assigned "${issue}" to ${memberName}`, taskId: task.id })
 })
 
-// POST /api/mail/send - Send mail
-app.post('/api/mail/send', (req, res) => {
-  const { to, subject, message } = req.body
-  if (!to || !message) {
-    return res.status(400).json({ error: 'Missing recipient or message' })
+// POST /api/agents/:id/complete - Mark task as complete
+app.post('/api/agents/:id/complete', (req, res) => {
+  const { teamName, memberName } = parseAgentId(req.params.id)
+
+  if (!teamName) {
+    return res.status(404).json({ error: 'Agent not found' })
   }
 
-  const subjectArg = subject ? `-s "${subject}"` : ''
-  const result = gt(`mail send ${to} ${subjectArg} -m "${message}"`)
-  if (result !== null) {
-    res.json({ success: true })
-  } else {
-    res.status(500).json({ error: 'Mail send failed' })
+  // Find and complete the in-progress task
+  const currentTask = backend.getTeammateCurrentTask(teamName, memberName)
+  let completedTask = null
+
+  if (currentTask) {
+    backend.completeTask(teamName, currentTask.id)
+    completedTask = currentTask.subject
   }
+
+  multiplayer.broadcastStateUpdate({
+    event: 'polecat:completed',
+    rig: teamName,
+    polecat: memberName,
+    task: completedTask
+  })
+
+  multiplayer.broadcastNotification({
+    type: 'success',
+    message: `${memberName} completed: ${completedTask || 'task'}`,
+    agent: memberName,
+    rig: teamName
+  })
+
+  addActivityEvent('task_completed', {
+    task: completedTask || 'task',
+    agent: memberName,
+    rig: teamName
+  }, req.session?.passport?.user)
+
+  res.json({ success: true, agent: memberName, completedTask })
+})
+
+// POST /api/agents/:id/reassign - Reassign work
+app.post('/api/agents/:id/reassign', (req, res) => {
+  const { newAgent, rig: targetRig } = req.body
+  const oldAgentId = req.params.id
+
+  if (!newAgent) {
+    return res.status(400).json({ error: 'New agent ID required' })
+  }
+
+  const { teamName: oldTeam, memberName: oldMember } = parseAgentId(oldAgentId)
+  if (!oldTeam) {
+    return res.status(404).json({ error: 'Old agent not found' })
+  }
+
+  // Get old agent's current task
+  const currentTask = backend.getTeammateCurrentTask(oldTeam, oldMember)
+  if (!currentTask) {
+    return res.status(400).json({ error: 'Old agent has no task to reassign' })
+  }
+
+  const task = currentTask.subject
+
+  // Complete old task
+  backend.completeTask(oldTeam, currentTask.id)
+
+  // Parse new agent
+  const { teamName: newTeam, memberName: newMember } = parseAgentId(newAgent)
+  const resolvedTeam = newTeam || targetRig || oldTeam
+
+  // Ensure new agent session is alive
+  if (!backend.isTeammateAlive(resolvedTeam, newMember)) {
+    try {
+      backend.spawnTeammate(resolvedTeam, newMember)
+    } catch (e) {
+      return res.status(500).json({ error: `Failed to start session for ${newMember}` })
+    }
+  }
+
+  // Create new task and assign
+  const newTask = backend.createTask(resolvedTeam, {
+    subject: task,
+    description: task,
+    owner: newMember,
+    activeForm: `Working on: ${task}`
+  })
+
+  // Send task to agent session
+  backend.sendToSession(resolvedTeam, newMember, task)
+
+  multiplayer.broadcastStateUpdate({
+    event: 'polecat:reassigned',
+    from: { rig: oldTeam, polecat: oldMember },
+    to: { rig: resolvedTeam, polecat: newMember },
+    task
+  })
+
+  multiplayer.broadcastNotification({
+    type: 'info',
+    message: `Task reassigned from ${oldMember} to ${newMember}`,
+    agent: newMember,
+    rig: resolvedTeam
+  })
+
+  addActivityEvent('task_reassigned', {
+    task,
+    fromAgent: oldMember,
+    toAgent: newMember,
+    rig: resolvedTeam
+  }, req.session?.passport?.user)
+
+  res.json({
+    success: true,
+    message: `Reassigned "${task}" from ${oldMember} to ${newMember}`,
+    oldAgent: { rig: oldTeam, polecat: oldMember, status: 'idle' },
+    newAgent: { rig: resolvedTeam, polecat: newMember, status: 'working', task }
+  })
+})
+
+// POST /api/agents/:id/stop - Stop agent
+app.post('/api/agents/:id/stop', (req, res) => {
+  const { teamName, memberName } = parseAgentId(req.params.id)
+
+  if (!teamName) {
+    return res.status(404).json({ error: 'Agent not found' })
+  }
+
+  const success = backend.stopTeammate(teamName, memberName)
+  res.json({ success })
 })
 
 // GET /api/agents/:id/hook - Get agent's current task/status
 app.get('/api/agents/:id/hook', (req, res) => {
-  // Parse agent ID - could be "rig/polecats/name" or just "name"
-  const agentId = req.params.id
-  const parts = agentId.split('/')
+  const { teamName, memberName } = parseAgentId(req.params.id)
 
-  let rigName, polecatName
-  if (parts.length >= 3) {
-    rigName = parts[0]
-    polecatName = parts[parts.length - 1]
-  } else {
-    polecatName = agentId
-    // Search all rigs for this polecat
-    const rigs = listRigs()
-    for (const rig of rigs) {
-      const statusPath = join(TOWN_ROOT, rig.name, 'polecats', polecatName, 'status.json')
-      if (existsSync(statusPath)) {
-        try {
-          const content = readFileSync(statusPath, 'utf-8')
-          const status = JSON.parse(content)
-          res.json({
-            hook: status.issue || status.task || null,
-            status: status.status,
-            assignedAt: status.assignedAt,
-            progress: status.progress || 0
-          })
-          return
-        } catch (e) {
-          // Parse error, continue
-        }
-      }
-    }
-    res.json({ hook: null, status: 'unknown' })
-    return
+  if (!teamName) {
+    return res.json({ hook: null, status: 'unknown' })
   }
 
-  // Read status from file
-  const statusPath = join(TOWN_ROOT, rigName, 'polecats', polecatName, 'status.json')
-  if (existsSync(statusPath)) {
-    try {
-      const content = readFileSync(statusPath, 'utf-8')
-      const status = JSON.parse(content)
+  const currentTask = backend.getTeammateCurrentTask(teamName, memberName)
+
+  if (currentTask) {
+    const elapsed = currentTask.fileModifiedAt
+      ? Date.now() - currentTask.fileModifiedAt
+      : 0
+    const alive = backend.isTeammateAlive(teamName, memberName)
+    const cost = backend.getSessionCost(teamName, memberName)
+
+    res.json({
+      hook: currentTask.subject,
+      status: (!alive && currentTask.status === 'in_progress') ? 'stuck' : currentTask.status === 'in_progress' ? 'working' : currentTask.status,
+      assignedAt: currentTask.createdAt,
+      progress: 0,
+      tokensUsed: cost.inputTokens + cost.outputTokens,
+      costUsd: cost.costUsd,
+      stuckReason: !alive ? 'session_dead' : null,
+      stuckAt: null,
+      completedTask: null,
+      completedAt: null
+    })
+  } else {
+    // Check for most recently completed task
+    const tasks = backend.getTasksForTeam(teamName)
+    const completedTasks = tasks
+      .filter(t => t.owner === memberName && t.status === 'completed')
+      .sort((a, b) => (b.completedAt || '').localeCompare(a.completedAt || ''))
+
+    if (completedTasks.length > 0) {
       res.json({
-        hook: status.issue || status.task || null,
-        status: status.status,
-        assignedAt: status.assignedAt,
-        progress: status.progress || 0,
-        tokensUsed: status.tokensUsed || 0,
-        stuckReason: status.stuckReason || null,
-        stuckAt: status.stuckAt || null,
-        completedTask: status.completedTask || null,
-        completedAt: status.completedAt || null
+        hook: null,
+        status: 'idle',
+        completedTask: completedTasks[0].subject,
+        completedAt: completedTasks[0].completedAt,
+        progress: 0,
+        tokensUsed: 0
       })
-    } catch (e) {
+    } else {
       res.json({ hook: null, status: 'idle' })
     }
-  } else {
-    res.json({ hook: null, status: 'idle' })
   }
 })
 
 // GET /api/agents/:id/logs - Get captured session output
 app.get('/api/agents/:id/logs', (req, res) => {
-  const { rigName, polecatName } = parseAgentId(req.params.id)
+  const { teamName, memberName } = parseAgentId(req.params.id)
   const lines = parseInt(req.query.lines) || 100
 
-  if (!rigName) {
+  if (!teamName) {
     return res.status(404).json({ error: 'Agent not found', logs: '', sessionActive: false })
   }
 
-  // Capture session output via gt session capture
-  const captured = gt(`session capture ${rigName}/${polecatName} -n ${lines}`)
-  const sessionActive = isSessionAlive(rigName, polecatName)
-
-  // Also read status for context
-  let status = {}
-  const statusPath = join(TOWN_ROOT, rigName, 'polecats', polecatName, 'status.json')
-  if (existsSync(statusPath)) {
-    try {
-      status = JSON.parse(readFileSync(statusPath, 'utf-8'))
-    } catch { /* ignore */ }
-  }
+  const captured = backend.captureOutput(teamName, memberName, lines)
+  const sessionActive = backend.isTeammateAlive(teamName, memberName)
+  const currentTask = backend.getTeammateCurrentTask(teamName, memberName)
+  const cost = backend.getSessionCost(teamName, memberName)
 
   res.json({
     logs: captured || '(No session output available)',
     sessionActive,
-    status: status.status || 'unknown',
-    task: status.issue || status.task || null,
-    tokensUsed: status.tokensUsed || 0,
-    rig: rigName,
-    polecat: polecatName
+    status: currentTask ? 'working' : 'idle',
+    task: currentTask?.subject || null,
+    tokensUsed: cost.inputTokens + cost.outputTokens,
+    costUsd: cost.costUsd,
+    rig: teamName,
+    polecat: memberName
   })
 })
 
 // GET /api/agents/:id/logs/stream - SSE stream of live session output
 app.get('/api/agents/:id/logs/stream', (req, res) => {
-  const { rigName, polecatName } = parseAgentId(req.params.id)
+  const { teamName, memberName } = parseAgentId(req.params.id)
 
-  if (!rigName) {
+  if (!teamName) {
     res.status(404).json({ error: 'Agent not found' })
     return
   }
@@ -944,129 +640,85 @@ app.get('/api/agents/:id/logs/stream', (req, res) => {
   res.setHeader('Cache-Control', 'no-cache')
   res.setHeader('Connection', 'keep-alive')
 
-  let lastLength = 0
+  // Send initial accumulated output
+  const initial = backend.captureOutput(teamName, memberName, 200)
+  if (initial) {
+    res.write(`data: ${JSON.stringify({ type: 'initial', logs: initial, sessionActive: true })}\n\n`)
+  }
 
-  const interval = setInterval(() => {
+  // Subscribe to live stream events
+  const unsubscribe = backend.subscribeToStream(teamName, memberName, (event) => {
     try {
-      const captured = gt(`session capture ${rigName}/${polecatName} -n 200`)
-      if (captured && captured.length !== lastLength) {
-        lastLength = captured.length
-        res.write(`data: ${JSON.stringify({ logs: captured, sessionActive: true })}\n\n`)
-      } else if (!captured || captured.trim() === '') {
-        // Check if session is still alive
-        const alive = isSessionAlive(rigName, polecatName)
-        if (!alive) {
-          res.write(`data: ${JSON.stringify({ logs: '(Session ended)', sessionActive: false })}\n\n`)
-        }
-      }
-    } catch (e) {
-      res.write(`data: ${JSON.stringify({ error: e.message, sessionActive: false })}\n\n`)
-    }
-  }, 2000)
+      res.write(`data: ${JSON.stringify(event)}\n\n`)
+    } catch { /* client disconnected */ }
+  })
 
   req.on('close', () => {
-    clearInterval(interval)
+    unsubscribe()
   })
 })
 
-// POST /api/agents/:id/simulate-stuck - Simulate agent getting stuck (for testing)
+// POST /api/agents/:id/simulate-stuck - Simulate stuck (dev/test only)
 app.post('/api/agents/:id/simulate-stuck', (req, res) => {
-  const agentId = req.params.id
-  const parts = agentId.split('/')
-
-  let rigName, polecatName
-  if (parts.length >= 3) {
-    rigName = parts[0]
-    polecatName = parts[parts.length - 1]
-  } else {
-    polecatName = agentId
-    // Find the rig
-    const rigs = listRigs()
-    for (const r of rigs) {
-      const statusPath = join(TOWN_ROOT, r.name, 'polecats', polecatName, 'status.json')
-      if (existsSync(statusPath)) {
-        rigName = r.name
-        break
-      }
-    }
+  if (process.env.NODE_ENV === 'production') {
+    return res.status(403).json({ error: 'Not available in production' })
   }
 
-  if (!rigName) {
+  const { teamName, memberName } = parseAgentId(req.params.id)
+
+  if (!teamName) {
     return res.status(404).json({ error: 'Agent not found' })
   }
 
-  const statusPath = join(TOWN_ROOT, rigName, 'polecats', polecatName, 'status.json')
-
-  try {
-    let status = { status: 'idle' }
-    if (existsSync(statusPath)) {
-      const content = readFileSync(statusPath, 'utf-8')
-      status = JSON.parse(content)
-    }
-
-    // Mark as stuck
-    status.status = 'stuck'
-    status.stuckReason = 'tokens'
-    status.stuckAt = new Date().toISOString()
-    status.tokensUsed = 25001  // Over the default threshold
-
-    writeFileSync(statusPath, JSON.stringify(status, null, 2))
-
-    multiplayer.broadcastStateUpdate({
-      event: 'polecat:stuck',
-      rig: rigName,
-      polecat: polecatName,
-      reason: 'tokens'
+  // Create a stuck-simulating task: just mark as in_progress with old mtime
+  const currentTask = backend.getTeammateCurrentTask(teamName, memberName)
+  if (!currentTask) {
+    // Create a fake in-progress task
+    backend.createTask(teamName, {
+      subject: 'Simulated stuck task',
+      description: 'Test task for stuck detection',
+      owner: memberName,
+      activeForm: 'Simulated stuck'
     })
-
-    multiplayer.broadcastNotification({
-      type: 'stuck',
-      message: `${polecatName} exceeded token limit!`,
-      agent: polecatName,
-      rig: rigName
-    })
-
-    // Add to activity feed
-    addActivityEvent('agent_stuck', {
-      agent: polecatName,
-      rig: rigName,
-      reason: 'tokens'
-    })
-
-    res.json({ success: true, message: `${polecatName} is now stuck (simulated)` })
-  } catch (e) {
-    res.status(500).json({ error: e.message })
   }
+
+  multiplayer.broadcastStateUpdate({
+    event: 'polecat:stuck',
+    rig: teamName,
+    polecat: memberName,
+    reason: 'tokens'
+  })
+
+  multiplayer.broadcastNotification({
+    type: 'stuck',
+    message: `${memberName} exceeded token limit!`,
+    agent: memberName,
+    rig: teamName
+  })
+
+  addActivityEvent('agent_stuck', {
+    agent: memberName,
+    rig: teamName,
+    reason: 'tokens'
+  })
+
+  res.json({ success: true, message: `${memberName} is now stuck (simulated)` })
 })
 
-// POST /api/agents/:id/stop - Emergency stop
-app.post('/api/agents/:id/stop', (req, res) => {
-  const result = gt(`stop ${req.params.id}`)
-  res.json({ success: result !== null })
-})
+// ===== SETTINGS =====
 
-// GET /api/costs - Get running costs
-app.get('/api/costs', (req, res) => {
-  const costs = gtJson('costs')
-  res.json(costs || { total: 0, breakdown: [] })
-})
-
-// GET /api/settings - Get current settings
 app.get('/api/settings', (req, res) => {
   res.json(currentSettings)
 })
 
-// POST /api/settings - Update settings
 app.post('/api/settings', (req, res) => {
   const newSettings = { ...currentSettings, ...req.body }
 
-  // Validate thresholds
   if (newSettings.stuckTokenThreshold < 1000) newSettings.stuckTokenThreshold = 1000
   if (newSettings.stuckTokenThreshold > 500000) newSettings.stuckTokenThreshold = 500000
-  if (newSettings.stuckTimeThreshold < 60000) newSettings.stuckTimeThreshold = 60000  // Min 1 minute
-  if (newSettings.stuckTimeThreshold > 7200000) newSettings.stuckTimeThreshold = 7200000  // Max 2 hours
+  if (newSettings.stuckTimeThreshold < 60000) newSettings.stuckTimeThreshold = 60000
+  if (newSettings.stuckTimeThreshold > 7200000) newSettings.stuckTimeThreshold = 7200000
 
-  // Calculate warning thresholds as 80% of stuck thresholds
   newSettings.warningTokenThreshold = Math.round(newSettings.stuckTokenThreshold * 0.8)
   newSettings.warningTimeThreshold = Math.round(newSettings.stuckTimeThreshold * 0.8)
 
@@ -1079,202 +731,13 @@ app.post('/api/settings', (req, res) => {
   }
 })
 
-// POST /api/agents/:id/reassign - Reassign work to another agent
-app.post('/api/agents/:id/reassign', (req, res) => {
-  const { newAgent, rig: targetRig } = req.body
-  const oldAgentId = req.params.id
+// ===== ACTIVITY FEED =====
 
-  if (!newAgent) {
-    return res.status(400).json({ error: 'New agent ID required' })
-  }
-
-  // Parse old agent ID
-  const oldParts = oldAgentId.split('/')
-  let oldRig, oldPolecat
-  if (oldParts.length >= 3) {
-    oldRig = oldParts[0]
-    oldPolecat = oldParts[oldParts.length - 1]
-  } else {
-    oldPolecat = oldAgentId
-    // Find the rig containing this polecat
-    const rigs = listRigs()
-    for (const r of rigs) {
-      const statusPath = join(TOWN_ROOT, r.name, 'polecats', oldPolecat, 'status.json')
-      if (existsSync(statusPath)) {
-        oldRig = r.name
-        break
-      }
-    }
-  }
-
-  if (!oldRig) {
-    return res.status(404).json({ error: 'Old agent not found' })
-  }
-
-  // Read old agent's current task
-  const oldStatusPath = join(TOWN_ROOT, oldRig, 'polecats', oldPolecat, 'status.json')
-  let oldStatus
-  try {
-    const content = readFileSync(oldStatusPath, 'utf-8')
-    oldStatus = JSON.parse(content)
-  } catch (e) {
-    return res.status(404).json({ error: 'Could not read old agent status' })
-  }
-
-  const task = oldStatus.issue || oldStatus.task
-  if (!task) {
-    return res.status(400).json({ error: 'Old agent has no task to reassign' })
-  }
-
-  // Parse new agent ID
-  const newParts = newAgent.split('/')
-  let newRig, newPolecat
-  if (newParts.length >= 3) {
-    newRig = newParts[0]
-    newPolecat = newParts[newParts.length - 1]
-  } else {
-    newPolecat = newAgent
-    newRig = targetRig || oldRig  // Default to same rig
-  }
-
-  // Update old agent to idle
-  const newOldStatus = {
-    status: 'idle',
-    previousTask: task,
-    reassignedAt: new Date().toISOString(),
-    reassignedTo: newPolecat
-  }
-  writeFileSync(oldStatusPath, JSON.stringify(newOldStatus, null, 2))
-
-  // Update new agent to working
-  const newStatusPath = join(TOWN_ROOT, newRig, 'polecats', newPolecat, 'status.json')
-  const newStatus = {
-    status: 'working',
-    issue: task,
-    assignedAt: new Date().toISOString(),
-    reassignedFrom: oldPolecat,
-    progress: 0
-  }
-
-  try {
-    const statusDir = dirname(newStatusPath)
-    if (!existsSync(statusDir)) {
-      mkdirSync(statusDir, { recursive: true })
-    }
-    writeFileSync(newStatusPath, JSON.stringify(newStatus, null, 2))
-  } catch (e) {
-    return res.status(500).json({ error: 'Failed to update new agent status' })
-  }
-
-  // Broadcast updates
-  multiplayer.broadcastStateUpdate({
-    event: 'polecat:reassigned',
-    from: { rig: oldRig, polecat: oldPolecat },
-    to: { rig: newRig, polecat: newPolecat },
-    task
-  })
-
-  multiplayer.broadcastNotification({
-    type: 'info',
-    message: `Task reassigned from ${oldPolecat} to ${newPolecat}`,
-    agent: newPolecat,
-    rig: newRig
-  })
-
-  // Add to activity feed
-  addActivityEvent('task_reassigned', {
-    task,
-    fromAgent: oldPolecat,
-    toAgent: newPolecat,
-    rig: newRig
-  }, req.session?.passport?.user)
-
-  res.json({
-    success: true,
-    message: `Reassigned "${task}" from ${oldPolecat} to ${newPolecat}`,
-    oldAgent: { rig: oldRig, polecat: oldPolecat, status: 'idle' },
-    newAgent: { rig: newRig, polecat: newPolecat, status: 'working', task }
-  })
-})
-
-// POST /api/agents/:id/complete - Mark task as complete (manual override)
-app.post('/api/agents/:id/complete', (req, res) => {
-  const agentId = req.params.id
-
-  // Parse agent ID
-  const parts = agentId.split('/')
-  let rigName, polecatName
-  if (parts.length >= 3) {
-    rigName = parts[0]
-    polecatName = parts[parts.length - 1]
-  } else {
-    polecatName = agentId
-    // Find the rig
-    const rigs = listRigs()
-    for (const r of rigs) {
-      const statusPath = join(TOWN_ROOT, r.name, 'polecats', polecatName, 'status.json')
-      if (existsSync(statusPath)) {
-        rigName = r.name
-        break
-      }
-    }
-  }
-
-  if (!rigName) {
-    return res.status(404).json({ error: 'Agent not found' })
-  }
-
-  const statusPath = join(TOWN_ROOT, rigName, 'polecats', polecatName, 'status.json')
-
-  try {
-    const content = readFileSync(statusPath, 'utf-8')
-    const oldStatus = JSON.parse(content)
-
-    const newStatus = {
-      status: 'idle',
-      completedTask: oldStatus.issue || oldStatus.task,
-      completedAt: new Date().toISOString(),
-      created: oldStatus.created
-    }
-
-    writeFileSync(statusPath, JSON.stringify(newStatus, null, 2))
-
-    multiplayer.broadcastStateUpdate({
-      event: 'polecat:completed',
-      rig: rigName,
-      polecat: polecatName,
-      task: oldStatus.issue
-    })
-
-    multiplayer.broadcastNotification({
-      type: 'success',
-      message: `${polecatName} completed: ${oldStatus.issue || 'task'}`,
-      agent: polecatName,
-      rig: rigName
-    })
-
-    // Add to activity feed
-    addActivityEvent('task_completed', {
-      task: oldStatus.issue || 'task',
-      agent: polecatName,
-      rig: rigName
-    }, req.session?.passport?.user)
-
-    res.json({ success: true, agent: polecatName, completedTask: oldStatus.issue })
-  } catch (e) {
-    res.status(500).json({ error: 'Failed to mark complete: ' + e.message })
-  }
-})
-
-// ===== ACTIVITY FEED ENDPOINTS =====
-
-// GET /api/activity - Get activity feed
 app.get('/api/activity', (req, res) => {
   const { limit = 50, offset = 0, type, project, agent } = req.query
 
   let filtered = [...activityFeed]
 
-  // Apply filters
   if (type) {
     const types = type.split(',')
     filtered = filtered.filter(e => types.includes(e.type))
@@ -1286,7 +749,6 @@ app.get('/api/activity', (req, res) => {
     filtered = filtered.filter(e => e.polecat === agent || e.agent === agent)
   }
 
-  // Apply pagination
   const start = parseInt(offset)
   const end = start + parseInt(limit)
   const paginated = filtered.slice(start, end)
@@ -1298,28 +760,8 @@ app.get('/api/activity', (req, res) => {
   })
 })
 
-// GET /api/feed - Live activity feed (SSE) - Legacy endpoint
-app.get('/api/feed', (req, res) => {
-  res.setHeader('Content-Type', 'text/event-stream')
-  res.setHeader('Cache-Control', 'no-cache')
-  res.setHeader('Connection', 'keep-alive')
+// ===== TASK QUEUE (GTGUI's own queue, separate from Agent Teams tasks) =====
 
-  // Poll gt feed and stream
-  const interval = setInterval(() => {
-    const feedLine = gt('feed --once 2>/dev/null') || ''
-    if (feedLine.trim()) {
-      res.write(`data: ${JSON.stringify({ event: feedLine.trim() })}\n\n`)
-    }
-  }, 1000)
-
-  req.on('close', () => {
-    clearInterval(interval)
-  })
-})
-
-// ===== TASK QUEUE ENDPOINTS =====
-
-// GET /api/taskqueue - Get task queue
 app.get('/api/taskqueue', (req, res) => {
   const { project } = req.query
   let filtered = [...taskQueue]
@@ -1328,21 +770,15 @@ app.get('/api/taskqueue', (req, res) => {
     filtered = filtered.filter(t => t.project === project)
   }
 
-  // Group by project for queue depth
   const projectDepths = {}
   taskQueue.forEach(t => {
     if (!projectDepths[t.project]) projectDepths[t.project] = 0
     projectDepths[t.project]++
   })
 
-  res.json({
-    tasks: filtered,
-    total: taskQueue.length,
-    projectDepths
-  })
+  res.json({ tasks: filtered, total: taskQueue.length, projectDepths })
 })
 
-// POST /api/taskqueue - Add task to queue
 app.post('/api/taskqueue', (req, res) => {
   const { title, description, project, priority = 0, assignTo, autoAssign = false } = req.body
 
@@ -1366,7 +802,6 @@ app.post('/api/taskqueue', (req, res) => {
   taskQueue.push(task)
   saveTaskQueue()
 
-  // Add to activity feed
   addActivityEvent('task_queued', {
     task: task.title,
     project: task.project,
@@ -1377,7 +812,6 @@ app.post('/api/taskqueue', (req, res) => {
   res.json({ success: true, task })
 })
 
-// PUT /api/taskqueue/:id - Update task (reorder, assign, etc.)
 app.put('/api/taskqueue/:id', (req, res) => {
   const { id } = req.params
   const { priority, assignTo, status, position } = req.body
@@ -1389,12 +823,10 @@ app.put('/api/taskqueue/:id', (req, res) => {
 
   const task = taskQueue[taskIndex]
 
-  // Update fields
   if (priority !== undefined) task.priority = priority
   if (assignTo !== undefined) task.assignTo = assignTo
   if (status !== undefined) task.status = status
 
-  // Handle reordering
   if (position !== undefined && position !== taskIndex) {
     taskQueue.splice(taskIndex, 1)
     taskQueue.splice(position, 0, task)
@@ -1405,7 +837,6 @@ app.put('/api/taskqueue/:id', (req, res) => {
   res.json({ success: true, task })
 })
 
-// DELETE /api/taskqueue/:id - Remove task from queue
 app.delete('/api/taskqueue/:id', (req, res) => {
   const { id } = req.params
   const taskIndex = taskQueue.findIndex(t => t.id === id)
@@ -1420,7 +851,7 @@ app.delete('/api/taskqueue/:id', (req, res) => {
   res.json({ success: true, removed })
 })
 
-// POST /api/taskqueue/:id/assign - Assign task from queue to agent
+// POST /api/taskqueue/:id/assign - Assign task from GTGUI queue to agent
 app.post('/api/taskqueue/:id/assign', (req, res) => {
   const { id } = req.params
   const { agent, rig } = req.body
@@ -1430,73 +861,65 @@ app.post('/api/taskqueue/:id/assign', (req, res) => {
     return res.status(404).json({ error: 'Task not found' })
   }
 
-  const task = taskQueue[taskIndex]
-
-  // Remove from queue
-  taskQueue.splice(taskIndex, 1)
-  saveTaskQueue()
-
-  // Sling to agent
-  const agentPath = `${rig || task.project}/polecats/${agent}`
-  const statusPath = join(TOWN_ROOT, rig || task.project, 'polecats', agent, 'status.json')
+  const queueTask = taskQueue[taskIndex]
+  const targetTeam = rig || queueTask.project
 
   try {
-    const status = {
-      status: 'working',
-      issue: task.title,
-      description: task.description,
-      assignedAt: new Date().toISOString(),
-      progress: 0
+    // Ensure session is alive
+    if (!backend.isTeammateAlive(targetTeam, agent)) {
+      backend.spawnTeammate(targetTeam, agent)
     }
-    const statusDir = dirname(statusPath)
-    if (!existsSync(statusDir)) {
-      mkdirSync(statusDir, { recursive: true })
-    }
-    writeFileSync(statusPath, JSON.stringify(status, null, 2))
+
+    // Create Agent Teams task and assign
+    const agentTask = backend.createTask(targetTeam, {
+      subject: queueTask.title,
+      description: queueTask.description || queueTask.title,
+      owner: agent,
+      activeForm: `Working on: ${queueTask.title}`
+    })
+
+    // Send task to agent session
+    backend.sendToSession(targetTeam, agent, queueTask.title)
+
+    // Remove from GTGUI queue
+    taskQueue.splice(taskIndex, 1)
+    saveTaskQueue()
 
     addActivityEvent('task_assigned', {
-      task: task.title,
-      agent: agent,
-      rig: rig || task.project,
-      taskId: task.id
+      task: queueTask.title,
+      agent,
+      rig: targetTeam,
+      taskId: queueTask.id
     })
 
     multiplayer.broadcastStateUpdate({
       event: 'polecat:working',
-      rig: rig || task.project,
+      rig: targetTeam,
       polecat: agent,
-      issue: task.title
+      issue: queueTask.title
     })
 
     multiplayer.broadcastTaskQueueUpdate(taskQueue)
-    res.json({ success: true, assigned: { agent, task: task.title } })
+    res.json({ success: true, assigned: { agent, task: queueTask.title } })
   } catch (e) {
-    // Put task back in queue on failure
-    taskQueue.splice(taskIndex, 0, task)
-    saveTaskQueue()
     res.status(500).json({ error: 'Failed to assign task: ' + e.message })
   }
 })
 
-// ===== COST DASHBOARD ENDPOINTS =====
+// ===== COST DASHBOARD =====
 
-// GET /api/costs/dashboard - Get cost dashboard data
+app.get('/api/costs', (req, res) => {
+  res.json(costHistory)
+})
+
 app.get('/api/costs/dashboard', (req, res) => {
   const today = new Date()
   const todayStr = today.toISOString().split('T')[0]
 
-  // Calculate date ranges
-  const weekAgo = new Date(today)
-  weekAgo.setDate(weekAgo.getDate() - 7)
-  const monthAgo = new Date(today)
-  monthAgo.setDate(monthAgo.getDate() - 30)
-
-  // Calculate totals
   let todayTokens = costHistory.daily[todayStr] || 0
   let weekTokens = 0
   let monthTokens = 0
 
-  // Build daily data for sparkline (last 7 days)
   const sparklineData = []
   for (let i = 6; i >= 0; i--) {
     const d = new Date(today)
@@ -1507,7 +930,6 @@ app.get('/api/costs/dashboard', (req, res) => {
     weekTokens += tokens
   }
 
-  // Calculate month total
   for (let i = 29; i >= 0; i--) {
     const d = new Date(today)
     d.setDate(d.getDate() - i)
@@ -1515,47 +937,28 @@ app.get('/api/costs/dashboard', (req, res) => {
     monthTokens += costHistory.daily[dateStr] || 0
   }
 
-  // Get token cost rate from settings
   const rate = currentSettings.tokenCostRate || 0.003
 
-  // Build breakdown by project
   const byProject = Object.entries(costHistory.byProject || {}).map(([name, data]) => ({
-    name,
-    tokens: data.total,
-    cost: (data.total / 1000) * rate
+    name, tokens: data.total, cost: (data.total / 1000) * rate
   })).sort((a, b) => b.tokens - a.tokens)
 
-  // Build breakdown by agent
   const byAgent = Object.entries(costHistory.byAgent || {}).map(([name, data]) => ({
-    name,
-    tokens: data.total,
-    cost: (data.total / 1000) * rate
+    name, tokens: data.total, cost: (data.total / 1000) * rate
   })).sort((a, b) => b.tokens - a.tokens)
 
   res.json({
-    today: {
-      tokens: todayTokens,
-      cost: (todayTokens / 1000) * rate
-    },
-    week: {
-      tokens: weekTokens,
-      cost: (weekTokens / 1000) * rate
-    },
-    month: {
-      tokens: monthTokens,
-      cost: (monthTokens / 1000) * rate
-    },
+    today: { tokens: todayTokens, cost: (todayTokens / 1000) * rate },
+    week: { tokens: weekTokens, cost: (weekTokens / 1000) * rate },
+    month: { tokens: monthTokens, cost: (monthTokens / 1000) * rate },
     sparkline: sparklineData,
     byProject,
     byAgent,
     rate,
-    budgetAlert: currentSettings.budgetLimit
-      ? monthTokens > currentSettings.budgetLimit * 0.8
-      : false
+    budgetAlert: currentSettings.budgetLimit ? monthTokens > currentSettings.budgetLimit * 0.8 : false
   })
 })
 
-// POST /api/costs/record - Record token usage (called by agents or hooks)
 app.post('/api/costs/record', (req, res) => {
   const { agent, project, tokens } = req.body
 
@@ -1569,7 +972,6 @@ app.post('/api/costs/record', (req, res) => {
   res.json({ success: true })
 })
 
-// GET /api/costs/export - Export cost data as CSV
 app.get('/api/costs/export', (req, res) => {
   const { from, to } = req.query
   const fromDate = from ? new Date(from) : new Date(Date.now() - 30 * 24 * 60 * 60 * 1000)
@@ -1593,10 +995,9 @@ app.get('/api/costs/export', (req, res) => {
   res.send(csv)
 })
 
-// ===== GITHUB INTEGRATION ENDPOINTS =====
+// ===== GITHUB INTEGRATION =====
 
-// GitHub PR tracking storage
-const GITHUB_PRS_FILE = join(TOWN_ROOT, 'github_prs.json')
+const GITHUB_PRS_FILE = join(GTGUI_DATA, 'github_prs.json')
 let githubPRs = []
 
 function loadGitHubPRs() {
@@ -1613,33 +1014,21 @@ function loadGitHubPRs() {
 
 function saveGitHubPRs() {
   try {
-    const dir = dirname(GITHUB_PRS_FILE)
-    if (!existsSync(dir)) {
-      mkdirSync(dir, { recursive: true })
-    }
     writeFileSync(GITHUB_PRS_FILE, JSON.stringify(githubPRs, null, 2))
   } catch (e) {
     console.error('Failed to save GitHub PRs:', e.message)
   }
 }
 
-// Load GitHub PRs on startup
 loadGitHubPRs()
 
-// GET /api/github/prs - Get tracked PRs
 app.get('/api/github/prs', (req, res) => {
   const { project, agent, status } = req.query
   let filtered = [...githubPRs]
 
-  if (project) {
-    filtered = filtered.filter(pr => pr.project === project)
-  }
-  if (agent) {
-    filtered = filtered.filter(pr => pr.agent === agent)
-  }
-  if (status) {
-    filtered = filtered.filter(pr => pr.status === status)
-  }
+  if (project) filtered = filtered.filter(pr => pr.project === project)
+  if (agent) filtered = filtered.filter(pr => pr.agent === agent)
+  if (status) filtered = filtered.filter(pr => pr.status === status)
 
   res.json({
     prs: filtered.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt)),
@@ -1647,7 +1036,6 @@ app.get('/api/github/prs', (req, res) => {
   })
 })
 
-// POST /api/github/prs - Track a new PR (can be called by agents via hooks)
 app.post('/api/github/prs', (req, res) => {
   const { url, title, agent, project, status = 'open', isDraft = false, commits = 0, changedFiles = 0 } = req.body
 
@@ -1655,21 +1043,14 @@ app.post('/api/github/prs', (req, res) => {
     return res.status(400).json({ error: 'URL and title required' })
   }
 
-  // Extract PR number from URL
   const prMatch = url.match(/\/pull\/(\d+)/)
   const prNumber = prMatch ? prMatch[1] : null
 
   const pr = {
     id: `pr-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
-    url,
-    number: prNumber,
-    title,
-    agent: agent || null,
-    project: project || 'unknown',
-    status,
-    isDraft,
-    commits,
-    changedFiles,
+    url, number: prNumber, title,
+    agent: agent || null, project: project || 'unknown',
+    status, isDraft, commits, changedFiles,
     ciStatus: 'pending',
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString()
@@ -1678,20 +1059,12 @@ app.post('/api/github/prs', (req, res) => {
   githubPRs.unshift(pr)
   saveGitHubPRs()
 
-  // Add to activity feed
-  addActivityEvent('pr_created', {
-    pr: title,
-    url,
-    agent,
-    project
-  }, agent)
-
+  addActivityEvent('pr_created', { pr: title, url, agent, project }, agent)
   multiplayer.broadcastStateUpdate({ event: 'github:pr_created', pr })
 
   res.json({ success: true, pr })
 })
 
-// PUT /api/github/prs/:id - Update PR status
 app.put('/api/github/prs/:id', (req, res) => {
   const { id } = req.params
   const { status, ciStatus, commits, changedFiles, isDraft } = req.body
@@ -1712,22 +1085,14 @@ app.put('/api/github/prs/:id', (req, res) => {
 
   saveGitHubPRs()
 
-  // Add activity event for status changes
   if (status === 'merged') {
-    addActivityEvent('pr_merged', {
-      pr: pr.title,
-      url: pr.url,
-      agent: pr.agent,
-      project: pr.project
-    })
+    addActivityEvent('pr_merged', { pr: pr.title, url: pr.url, agent: pr.agent, project: pr.project })
   }
 
   multiplayer.broadcastStateUpdate({ event: 'github:pr_updated', pr })
-
   res.json({ success: true, pr })
 })
 
-// DELETE /api/github/prs/:id - Remove PR tracking
 app.delete('/api/github/prs/:id', (req, res) => {
   const { id } = req.params
   const prIndex = githubPRs.findIndex(pr => pr.id === id)
@@ -1738,11 +1103,9 @@ app.delete('/api/github/prs/:id', (req, res) => {
 
   const removed = githubPRs.splice(prIndex, 1)[0]
   saveGitHubPRs()
-
   res.json({ success: true, removed })
 })
 
-// POST /api/github/webhook - Webhook receiver for GitHub events
 app.post('/api/github/webhook', (req, res) => {
   const event = req.headers['x-github-event']
   const payload = req.body
@@ -1751,7 +1114,6 @@ app.post('/api/github/webhook', (req, res) => {
     const prUrl = payload.pull_request?.html_url
     const prStatus = payload.action
 
-    // Find and update tracked PR
     const pr = githubPRs.find(p => p.url === prUrl)
     if (pr) {
       if (prStatus === 'closed' && payload.pull_request?.merged) {
@@ -1764,7 +1126,6 @@ app.post('/api/github/webhook', (req, res) => {
       pr.isDraft = payload.pull_request?.draft || false
       pr.updatedAt = new Date().toISOString()
       saveGitHubPRs()
-
       multiplayer.broadcastStateUpdate({ event: 'github:pr_updated', pr })
     }
   }
@@ -1772,9 +1133,8 @@ app.post('/api/github/webhook', (req, res) => {
   res.json({ received: true })
 })
 
-// ===== BATCH OPERATIONS ENDPOINTS =====
+// ===== BATCH OPERATIONS =====
 
-// POST /api/batch/stop - Stop multiple agents
 app.post('/api/batch/stop', (req, res) => {
   const { agents } = req.body
 
@@ -1784,52 +1144,24 @@ app.post('/api/batch/stop', (req, res) => {
 
   const results = []
   for (const agentId of agents) {
-    try {
-      // Parse agent ID
-      const parts = agentId.split('/')
-      let rigName, polecatName
-      if (parts.length >= 3) {
-        rigName = parts[0]
-        polecatName = parts[parts.length - 1]
-      } else {
-        polecatName = agentId
-        // Find the rig
-        const rigs = listRigs()
-        for (const r of rigs) {
-          const statusPath = join(TOWN_ROOT, r.name, 'polecats', polecatName, 'status.json')
-          if (existsSync(statusPath)) {
-            rigName = r.name
-            break
-          }
-        }
-      }
-
-      if (rigName) {
-        const statusPath = join(TOWN_ROOT, rigName, 'polecats', polecatName, 'status.json')
-        if (existsSync(statusPath)) {
-          const content = readFileSync(statusPath, 'utf-8')
-          const status = JSON.parse(content)
-          status.status = 'idle'
-          status.stoppedAt = new Date().toISOString()
-          writeFileSync(statusPath, JSON.stringify(status, null, 2))
-          results.push({ agent: agentId, success: true })
-        }
-      }
-    } catch (e) {
-      results.push({ agent: agentId, success: false, error: e.message })
+    const { teamName, memberName } = parseAgentId(agentId)
+    if (teamName) {
+      const success = backend.stopTeammate(teamName, memberName)
+      results.push({ agent: agentId, success })
+    } else {
+      results.push({ agent: agentId, success: false, error: 'Agent not found' })
     }
   }
 
   addActivityEvent('batch_stop', {
     count: results.filter(r => r.success).length,
-    agents: agents
+    agents
   }, req.session?.passport?.user)
 
   multiplayer.broadcastStateUpdate({ event: 'batch:stop', results })
   res.json({ success: true, results })
 })
 
-// POST /api/batch/complete - Mark multiple agents as complete
 app.post('/api/batch/complete', (req, res) => {
   const { agents } = req.body
 
@@ -1839,83 +1171,47 @@ app.post('/api/batch/complete', (req, res) => {
 
   const results = []
   for (const agentId of agents) {
-    try {
-      const parts = agentId.split('/')
-      let rigName, polecatName
-      if (parts.length >= 3) {
-        rigName = parts[0]
-        polecatName = parts[parts.length - 1]
+    const { teamName, memberName } = parseAgentId(agentId)
+    if (teamName) {
+      const currentTask = backend.getTeammateCurrentTask(teamName, memberName)
+      if (currentTask) {
+        backend.completeTask(teamName, currentTask.id)
+        results.push({ agent: agentId, success: true })
       } else {
-        polecatName = agentId
-        const rigs = listRigs()
-        for (const r of rigs) {
-          const statusPath = join(TOWN_ROOT, r.name, 'polecats', polecatName, 'status.json')
-          if (existsSync(statusPath)) {
-            rigName = r.name
-            break
-          }
-        }
+        results.push({ agent: agentId, success: true }) // Already idle
       }
-
-      if (rigName) {
-        const statusPath = join(TOWN_ROOT, rigName, 'polecats', polecatName, 'status.json')
-        if (existsSync(statusPath)) {
-          const content = readFileSync(statusPath, 'utf-8')
-          const oldStatus = JSON.parse(content)
-          const newStatus = {
-            status: 'idle',
-            completedTask: oldStatus.issue || oldStatus.task,
-            completedAt: new Date().toISOString(),
-            created: oldStatus.created
-          }
-          writeFileSync(statusPath, JSON.stringify(newStatus, null, 2))
-          results.push({ agent: agentId, success: true })
-        }
-      }
-    } catch (e) {
-      results.push({ agent: agentId, success: false, error: e.message })
+    } else {
+      results.push({ agent: agentId, success: false, error: 'Agent not found' })
     }
   }
 
   addActivityEvent('batch_complete', {
     count: results.filter(r => r.success).length,
-    agents: agents
+    agents
   }, req.session?.passport?.user)
 
   multiplayer.broadcastStateUpdate({ event: 'batch:complete', results })
   res.json({ success: true, results })
 })
 
-// POST /api/batch/spawn - Spawn multiple agents at once
 app.post('/api/batch/spawn', (req, res) => {
-  const { rig, count = 1, prefix = 'polecat' } = req.body
+  const { rig, count = 1, prefix = 'agent' } = req.body
 
   if (!rig) {
-    return res.status(400).json({ error: 'Rig name required' })
+    return res.status(400).json({ error: 'Team name required' })
   }
 
   const results = []
-  const rigPath = join(TOWN_ROOT, rig)
 
-  for (let i = 0; i < Math.min(count, 10); i++) {  // Max 10 at once
+  for (let i = 0; i < Math.min(count, 10); i++) {
     try {
-      const pcName = `${prefix}-${Date.now()}-${i}`
-      const polecatPath = join(rigPath, 'polecats', pcName)
+      const name = `${prefix}_${Date.now()}_${i}`
+      backend.spawnTeammate(rig, name)
+      results.push({ name, success: true })
 
-      if (!existsSync(polecatPath)) {
-        mkdirSync(polecatPath, { recursive: true })
-      }
-
-      const initialStatus = {
-        status: 'idle',
-        created: new Date().toISOString()
-      }
-      writeFileSync(join(polecatPath, 'status.json'), JSON.stringify(initialStatus, null, 2))
-      results.push({ name: pcName, success: true })
-
-      multiplayer.broadcastStateUpdate({ event: 'polecat:spawned', rig, polecat: pcName })
+      multiplayer.broadcastStateUpdate({ event: 'polecat:spawned', rig, polecat: name })
     } catch (e) {
-      results.push({ name: `${prefix}-${i}`, success: false, error: e.message })
+      results.push({ name: `${prefix}_${i}`, success: false, error: e.message })
     }
   }
 
@@ -1928,9 +1224,9 @@ app.post('/api/batch/spawn', (req, res) => {
   res.json({ success: true, results })
 })
 
-// ===== PROJECT TEMPLATES ENDPOINTS =====
+// ===== PROJECT TEMPLATES =====
 
-const TEMPLATES_FILE = join(TOWN_ROOT, 'templates.json')
+const TEMPLATES_FILE = join(GTGUI_DATA, 'templates.json')
 let projectTemplates = []
 
 function loadTemplates() {
@@ -1947,58 +1243,29 @@ function loadTemplates() {
 
 function saveTemplates() {
   try {
-    const dir = dirname(TEMPLATES_FILE)
-    if (!existsSync(dir)) {
-      mkdirSync(dir, { recursive: true })
-    }
     writeFileSync(TEMPLATES_FILE, JSON.stringify(projectTemplates, null, 2))
   } catch (e) {
     console.error('Failed to save templates:', e.message)
   }
 }
 
-// Load templates on startup
 loadTemplates()
 
-// GET /api/templates - Get all templates
 app.get('/api/templates', (req, res) => {
   res.json({ templates: projectTemplates })
 })
 
-// POST /api/templates - Create template from existing rig
 app.post('/api/templates', (req, res) => {
-  const { name, description, sourceRig, defaultAgentCount = 1, taskTypes = [] } = req.body
+  const { name, description, defaultAgentCount = 1, taskTypes = [] } = req.body
 
   if (!name) {
     return res.status(400).json({ error: 'Template name required' })
-  }
-
-  // Get repo info from source rig if provided
-  let repo = null
-  if (sourceRig) {
-    const rigPath = join(TOWN_ROOT, sourceRig)
-    try {
-      // Try to find a git repo in the rig
-      const dirs = execSync(`ls -1 "${rigPath}" 2>/dev/null || true`, { encoding: 'utf-8' }).trim()
-      for (const dir of dirs.split('\n').filter(Boolean)) {
-        const gitPath = join(rigPath, dir, '.git')
-        if (existsSync(gitPath)) {
-          try {
-            repo = execSync(`cd "${join(rigPath, dir)}" && git remote get-url origin 2>/dev/null`, {
-              encoding: 'utf-8'
-            }).trim()
-          } catch (e) { /* no remote */ }
-          break
-        }
-      }
-    } catch (e) { /* ignore */ }
   }
 
   const template = {
     id: `tpl-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
     name,
     description: description || '',
-    repo,
     defaultAgentCount,
     taskTypes,
     createdAt: new Date().toISOString(),
@@ -2011,8 +1278,7 @@ app.post('/api/templates', (req, res) => {
   res.json({ success: true, template })
 })
 
-// POST /api/templates/:id/create - Create project from template
-app.post('/api/templates/:id/create', async (req, res) => {
+app.post('/api/templates/:id/create', (req, res) => {
   const { id } = req.params
   const { projectName } = req.body
 
@@ -2025,44 +1291,21 @@ app.post('/api/templates/:id/create', async (req, res) => {
     return res.status(400).json({ error: 'Project name required' })
   }
 
-  // Validate name — gt rejects hyphens, dots, and spaces
   if (!/^[a-zA-Z0-9_]+$/.test(projectName)) {
-    return res.status(400).json({ error: 'Invalid project name. Use alphanumeric or underscores only (no hyphens, dots, or spaces).' })
+    return res.status(400).json({ error: 'Invalid project name. Use alphanumeric or underscores only.' })
   }
 
   try {
-    // Create the rig
-    const rigPath = join(TOWN_ROOT, projectName)
-    mkdirSync(rigPath, { recursive: true })
+    backend.createTeam(projectName)
 
-    // Clone repo if template has one
-    if (template.repo) {
-      try {
-        execSync(`git clone "${template.repo}"`, {
-          cwd: rigPath,
-          encoding: 'utf-8',
-          timeout: 120000
-        })
-      } catch (e) {
-        console.error('Clone failed:', e.message)
-      }
-    }
-
-    // Spawn polecats
-    const polecats = []
+    const teammates = []
     for (let i = 0; i < template.defaultAgentCount; i++) {
-      const pcName = `polecat-${i + 1}`
-      const polecatPath = join(rigPath, 'polecats', pcName)
-      mkdirSync(polecatPath, { recursive: true })
-      writeFileSync(join(polecatPath, 'status.json'), JSON.stringify({
-        status: 'idle',
-        created: new Date().toISOString()
-      }, null, 2))
-      polecats.push(pcName)
+      const name = `agent_${i + 1}`
+      try {
+        backend.spawnTeammate(projectName, name)
+        teammates.push(name)
+      } catch { /* ignore individual spawn failures */ }
     }
-
-    // Register as a gt rig so sling/sessions work
-    gt(`rig add ${projectName} --adopt --force`)
 
     addActivityEvent('project_from_template', {
       project: projectName,
@@ -2075,14 +1318,13 @@ app.post('/api/templates/:id/create', async (req, res) => {
       success: true,
       project: projectName,
       template: template.name,
-      polecats
+      polecats: teammates
     })
   } catch (e) {
     res.status(500).json({ error: 'Failed to create project: ' + e.message })
   }
 })
 
-// DELETE /api/templates/:id - Delete a template
 app.delete('/api/templates/:id', (req, res) => {
   const { id } = req.params
   const index = projectTemplates.findIndex(t => t.id === id)
@@ -2093,55 +1335,166 @@ app.delete('/api/templates/:id', (req, res) => {
 
   const removed = projectTemplates.splice(index, 1)[0]
   saveTemplates()
-
   res.json({ success: true, removed })
 })
 
-// Helper: Get polecats for a specific rig
-function getPolecatsForRig(rigName) {
-  const polecats = []
-  const polecatsPath = join(TOWN_ROOT, rigName, 'polecats')
+// ===== OPERATIONS DASHBOARD (simplified — no refinery/witness) =====
 
-  try {
-    // List polecat directories
-    const dirs = execSync(`ls -1 "${polecatsPath}" 2>/dev/null || true`, {
-      encoding: 'utf-8'
-    }).trim()
+app.get('/api/operations', (req, res) => {
+  const teams = backend.listTeams()
+  const rigDetails = teams.map(team => {
+    const teammates = backend.getTeammates(team.name)
+    const tasks = backend.getTasksForTeam(team.name)
 
-    if (!dirs) return polecats
-
-    for (const name of dirs.split('\n').filter(Boolean)) {
-      const statusFile = join(polecatsPath, name, 'status.json')
-      let status = { status: 'idle' }
-
-      try {
-        const content = execSync(`cat "${statusFile}" 2>/dev/null || echo '{}'`, {
-          encoding: 'utf-8'
-        })
-        status = JSON.parse(content) || { status: 'idle' }
-      } catch (e) {
-        // No status file, default to idle
+    return {
+      name: team.name,
+      polecat_count: teammates.length,
+      polecats: teammates.map(t => ({ name: t.name, status: t.status })),
+      tasks: {
+        pending: tasks.filter(t => t.status === 'pending').length,
+        in_progress: tasks.filter(t => t.status === 'in_progress').length,
+        completed: tasks.filter(t => t.status === 'completed').length,
+        total: tasks.length
       }
-
-      polecats.push({
-        name,
-        rig: rigName,
-        status: status.status || 'idle',
-        issue: status.issue || null,
-        assignedAt: status.assignedAt || null,
-        progress: status.progress || 0,
-        tokensUsed: status.tokensUsed || 0,
-        stuckReason: status.stuckReason || null,
-        stuckAt: status.stuckAt || null,
-        created: status.created || null
-      })
     }
-  } catch (e) {
-    // No polecats directory
+  })
+
+  const totalPolecats = rigDetails.reduce((sum, r) => sum + r.polecat_count, 0)
+
+  res.json({
+    town: {
+      name: 'Agent Teams',
+      summary: {
+        rig_count: teams.length,
+        polecat_count: totalPolecats
+      }
+    },
+    agents: [],
+    rigs: rigDetails,
+    costs: costHistory
+  })
+})
+
+// ===== NEW: Agent Teams Task endpoints =====
+
+app.get('/api/teams/:name/tasks', (req, res) => {
+  const tasks = backend.getTasksForTeam(req.params.name)
+  res.json({ tasks })
+})
+
+app.post('/api/teams/:name/tasks', (req, res) => {
+  const { subject, description, owner, activeForm } = req.body
+
+  if (!subject) {
+    return res.status(400).json({ error: 'Task subject required' })
   }
 
-  return polecats
-}
+  const task = backend.createTask(req.params.name, { subject, description, owner, activeForm })
+  res.json({ success: true, task })
+})
+
+// ===== EMPEROR (formerly Mayor / Team Lead) =====
+
+app.post('/api/emperor/start', async (req, res) => {
+  // Check which team to start emperor for
+  const teams = backend.listTeams()
+  const teamName = req.body?.team || (teams.length > 0 ? teams[0].name : null)
+
+  if (!teamName) {
+    // No teams exist yet — create a default
+    backend.createTeam('default')
+  }
+
+  const resolvedTeam = teamName || 'default'
+
+  if (backend.isEmperorAlive(resolvedTeam)) {
+    return res.json({ success: true, already_running: true })
+  }
+
+  try {
+    await backend.startEmperor(resolvedTeam)
+    addActivityEvent('emperor_started', {}, req.session?.passport?.user)
+    res.json({ success: true })
+  } catch (e) {
+    res.status(500).json({ error: 'Failed to start Emperor session' })
+  }
+})
+
+app.get('/api/emperor/status', (req, res) => {
+  const teams = backend.listTeams()
+  let running = false
+  let teamName = null
+
+  for (const team of teams) {
+    if (backend.isEmperorAlive(team.name)) {
+      running = true
+      teamName = team.name
+      break
+    }
+  }
+
+  res.json({ running, team: teamName, emperorName: currentSettings.emperorName || 'Tiberius Claudius' })
+})
+
+app.post('/api/emperor/message', (req, res) => {
+  const { message, team } = req.body
+  if (!message) {
+    return res.status(400).json({ error: 'Message required' })
+  }
+
+  // Find the team with active emperor
+  const teams = backend.listTeams()
+  const targetTeam = team || teams.find(t => backend.isEmperorAlive(t.name))?.name
+
+  if (!targetTeam) {
+    return res.status(400).json({ error: 'No active Emperor session found' })
+  }
+
+  const success = backend.sendToEmperor(targetTeam, message)
+  if (success) {
+    res.json({ success: true })
+  } else {
+    res.status(500).json({ error: 'Failed to send message to Emperor' })
+  }
+})
+
+app.get('/api/emperor/stream', (req, res) => {
+  res.setHeader('Content-Type', 'text/event-stream')
+  res.setHeader('Cache-Control', 'no-cache')
+  res.setHeader('Connection', 'keep-alive')
+
+  // Find team with active emperor
+  const teams = backend.listTeams()
+  const teamName = teams.find(t => backend.isEmperorAlive(t.name))?.name
+
+  if (!teamName) {
+    res.write(`data: ${JSON.stringify({ type: 'text_delta', text: '(Emperor not running)' })}\n\n`)
+    return
+  }
+
+  // Send initial accumulated output
+  const initial = backend.captureEmperor(teamName)
+  if (initial) {
+    res.write(`data: ${JSON.stringify({ type: 'initial', content: initial })}\n\n`)
+  }
+
+  // Subscribe to live stream events
+  const unsubscribe = backend.subscribeToStream(teamName, 'emperor', (event) => {
+    try {
+      res.write(`data: ${JSON.stringify(event)}\n\n`)
+    } catch { /* client disconnected */ }
+  })
+
+  req.on('close', () => {
+    unsubscribe()
+  })
+})
+
+// Backward compat redirects for /api/mayor/* → /api/emperor/*
+app.post('/api/mayor/start', (req, res) => res.redirect(307, '/api/emperor/start'))
+app.get('/api/mayor/status', (req, res) => res.redirect('/api/emperor/status'))
+app.post('/api/mayor/message', (req, res) => res.redirect(307, '/api/emperor/message'))
+app.get('/api/mayor/stream', (req, res) => res.redirect('/api/emperor/stream'))
 
 // Static files
 app.use(express.static(join(__dirname, 'dist')))
@@ -2159,9 +1512,10 @@ app.use((err, req, res, next) => {
 
 const PORT = process.env.PORT || 8080
 httpServer.listen(PORT, () => {
-  console.log(`Gas Town UI server running at http://localhost:${PORT}`)
-  console.log(`Town root: ${TOWN_ROOT}`)
-  console.log(`GT binary: ${GT_PATH}`)
+  console.log(`GTGUI server running at http://localhost:${PORT}`)
+  console.log(`Data directory: ${GTGUI_DATA}`)
+  console.log(`Teams root: ${backend.teamsRoot}`)
+  console.log(`Tasks root: ${backend.tasksRoot}`)
   console.log(`WebSocket enabled for multiplayer`)
   if (!process.env.GITHUB_CLIENT_ID) {
     console.log(`GitHub OAuth: Not configured (dev mode enabled)`)

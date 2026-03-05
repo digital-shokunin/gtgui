@@ -7,9 +7,10 @@ export class GameScene extends Phaser.Scene {
     super({ key: 'GameScene' })
     this.api = new GasTownAPI()
     this.units = new Map()
+    this.eatenPolecats = new Set()
     this.buildings = new Map()
     this.selectedUnits = []
-    this.mapWidth = 40  // Larger map for multiple villages
+    this.mapWidth = 40  // Larger map for multiple colonies
     this.mapHeight = 40
     // 2x tile dimensions for enhanced sprites
     this.tileWidth = 128
@@ -19,9 +20,9 @@ export class GameScene extends Phaser.Scene {
     this.multiplayer = null
     this.otherUsers = new Map() // userId -> { cursor, selections, sprites }
 
-    // Multi-village support
-    this.villages = []
-    this.villageSpacing = 12 // Grid units between village centers
+    // Multi-colony support
+    this.colonies = []
+    this.colonySpacing = 12 // Grid units between colony centers
   }
 
   create() {
@@ -648,22 +649,22 @@ export class GameScene extends Phaser.Scene {
   }
 
   createDemoState() {
-    // Central Town (Mayor's area) - this is the hub
-    this.addVillage('Town Center', null, 20, 20, true)
+    // Central Colony HQ — Emperor's area
+    this.addColony('Colony HQ', null, 20, 20, true)
   }
 
-  // Add a new village to the map
-  addVillage(name, repoUrl = null, centerX = null, centerY = null, isHub = false) {
-    // Calculate position for new village
+  // Add a new colony to the map
+  addColony(name, repoUrl = null, centerX = null, centerY = null, isHub = false) {
+    // Calculate position for new colony
     if (centerX === null || centerY === null) {
-      const villageIndex = this.villages.length
-      const angle = (villageIndex * Math.PI * 2) / Math.max(1, villageIndex)
-      const radius = this.villageSpacing
+      const colonyIndex = this.colonies.length
+      const angle = (colonyIndex * Math.PI * 2) / Math.max(1, colonyIndex)
+      const radius = this.colonySpacing
       centerX = 20 + Math.cos(angle) * radius
       centerY = 20 + Math.sin(angle) * radius
     }
 
-    const village = {
+    const colony = {
       name,
       repoUrl,
       centerX: Math.floor(centerX),
@@ -673,46 +674,46 @@ export class GameScene extends Phaser.Scene {
       buildings: []
     }
 
-    this.villages.push(village)
+    this.colonies.push(colony)
 
     if (isHub) {
-      // Central hub — Gas Town HQ with Mayor and Deacon agents
-      this.addBuilding('townhall', 'Gas Town HQ', centerX, centerY, 'building-townhall')
+      // Central hub — Colony HQ with Emperor
+      this.addBuilding('townhall', 'Colony HQ', centerX, centerY, 'building-townhall')
 
-      // Mayor — global orchestrator (special click handler)
-      const mayor = this.addUnit('mayor', 'Mayor', centerX, centerY - 1, 'unit-mayor', 'idle')
-      if (mayor) {
-        mayor.sprite.on('pointerdown', () => {
-          this.events.emit('mayorClicked')
+      // Emperor — colony coordinator (special click handler)
+      const emperor = this.addUnit('emperor', 'Emperor', centerX, centerY - 1, 'unit-emperor', 'idle')
+      if (emperor) {
+        emperor.sprite.on('pointerdown', () => {
+          this.events.emit('emperorClicked')
         })
       }
 
-      // Deacon — town watchdog
-      this.addUnit('deacon', 'Deacon', centerX - 1, centerY, 'unit-deacon', 'idle')
+      // Ops Center — data processing hub
+      this.addBuilding('ops-center', 'Ops Center', centerX - 3, centerY - 2, 'building-refinery')
 
-      // Barracks — hub building (decorative)
+      // Barracks — hub building
       this.addBuilding('barracks', 'Barracks', centerX + 2, centerY + 1, 'building-barracks')
     } else {
-      // Project village
+      // Project colony
       const rigId = `rig-${name.toLowerCase().replace(/[^a-z0-9]/g, '-')}`
       this.addBuilding(rigId, name, centerX, centerY, 'building-rig')
-      village.buildings.push(rigId)
+      colony.buildings.push(rigId)
 
       // Add a signpost or marker
       this.addBuilding(`sign-${rigId}`, name, centerX - 1, centerY + 1, 'building-barracks')
 
       // Add path/road connecting to hub (visual only)
-      this.addVillagePath(20, 20, centerX, centerY)
+      this.addColonyPath(20, 20, centerX, centerY)
     }
 
     // Notify UI
-    this.events.emit('villageAdded', village)
+    this.events.emit('colonyAdded', colony)
 
-    return village
+    return colony
   }
 
-  // Add visual path between villages
-  addVillagePath(fromX, fromY, toX, toY) {
+  // Add visual path between colonies
+  addColonyPath(fromX, fromY, toX, toY) {
     const pathGraphics = this.add.graphics()
     pathGraphics.lineStyle(8, 0xD2B48C, 0.6)
 
@@ -728,37 +729,37 @@ export class GameScene extends Phaser.Scene {
     this.mapLayer.add(pathGraphics)
   }
 
-  // Add a polecat to a specific village
-  addPolecatToVillage(villageName, polecatName) {
-    const village = this.villages.find(v => v.name.toLowerCase() === villageName.toLowerCase())
-    if (!village) return null
+  // Add a polecat to a specific colony
+  addPolecatToColony(colonyName, polecatName) {
+    const colony = this.colonies.find(v => v.name.toLowerCase() === colonyName.toLowerCase())
+    if (!colony) return null
 
-    // Position near village center
+    // Position near colony center
     const offsetX = Phaser.Math.Between(-2, 2)
     const offsetY = Phaser.Math.Between(-2, 2)
 
     const unit = this.addUnit(
       `polecat-${polecatName}`,
       polecatName,
-      village.centerX + offsetX,
-      village.centerY + offsetY,
+      colony.centerX + offsetX,
+      colony.centerY + offsetY,
       'unit-polecat-idle',
       'idle'
     )
 
     if (unit) {
-      village.polecats.push(polecatName)
+      colony.polecats.push(polecatName)
     }
 
     return unit
   }
 
-  // Pan camera to a village
-  panToVillage(villageName) {
-    const village = this.villages.find(v => v.name.toLowerCase() === villageName.toLowerCase())
-    if (!village) return
+  // Pan camera to a colony
+  panToColony(colonyName) {
+    const colony = this.colonies.find(v => v.name.toLowerCase() === colonyName.toLowerCase())
+    if (!colony) return
 
-    const { x, y } = this.gridToIso(village.centerX, village.centerY)
+    const { x, y } = this.gridToIso(colony.centerX, colony.centerY)
 
     this.tweens.add({
       targets: this.cameras.main,
@@ -771,12 +772,11 @@ export class GameScene extends Phaser.Scene {
 
   updateFromState(state) {
     // First create the central hub
-    this.addVillage('Town Center', null, 20, 20, true)
+    this.addColony('Colony HQ', null, 20, 20, true)
 
-    // Add rigs as villages around the hub
+    // Add rigs as colonies around the hub
     if (state.rigs && state.rigs.length > 0) {
-      // All rigs are project buildings — mayor/deacon/refinery are system dirs
-      // already filtered server-side (they don't have polecats/)
+      // All rigs are project teams (Agent Teams backend)
       const projectRigs = state.rigs
 
       projectRigs.forEach((rig, i) => {
@@ -792,8 +792,8 @@ export class GameScene extends Phaser.Scene {
 
         this.addBuilding(`rig-${rig.name}`, rig.name, Math.floor(cx), Math.floor(cy), buildingType)
 
-        // Track as village
-        this.villages.push({
+        // Track as colony
+        this.colonies.push({
           name: rig.name,
           centerX: Math.floor(cx),
           centerY: Math.floor(cy),
@@ -809,24 +809,24 @@ export class GameScene extends Phaser.Scene {
         const status = pc.status === 'working' ? 'unit-polecat-working' :
                        pc.status === 'stuck' ? 'unit-polecat-stuck' : 'unit-polecat-idle'
 
-        // Find the village this polecat belongs to
-        const village = this.villages.find(v => v.name === pc.rig)
+        // Find the colony this polecat belongs to
+        const colony = this.colonies.find(v => v.name === pc.rig)
         let gridX = 13 + i
         let gridY = 8 + i
 
-        if (village) {
-          // Position near the village center
-          gridX = village.centerX + Phaser.Math.Between(-2, 2)
-          gridY = village.centerY + Phaser.Math.Between(-2, 2)
-          village.polecats.push(pc.name)
+        if (colony) {
+          // Position near the colony center
+          gridX = colony.centerX + Phaser.Math.Between(-2, 2)
+          gridY = colony.centerY + Phaser.Math.Between(-2, 2)
+          colony.polecats.push(pc.name)
         }
 
         this.addUnit(`polecat-${pc.name}`, pc.name, gridX, gridY, status, pc.status)
       })
     }
 
-    // Emit event to update village navigator
-    this.events.emit('villageAdded', this.villages[0])
+    // Emit event to update colony navigator
+    this.events.emit('colonyAdded', this.colonies[0])
   }
 
   addBuilding(id, name, gridX, gridY, spriteKey, rig = null) {
@@ -1195,10 +1195,22 @@ export class GameScene extends Phaser.Scene {
       // Update unit states (and add new polecats that don't exist yet)
       if (state.polecats) {
         state.polecats.forEach(pc => {
-          let unit = this.units.get(`polecat-${pc.name}`)
+          const unitKey = `polecat-${pc.name}`
+
+          // Skip polecats that were eaten by sea lion (stuck + already animated)
+          if (this.eatenPolecats.has(unitKey)) {
+            // Clear from eaten set once status changes back (e.g. manually reset to idle)
+            if (pc.status !== 'stuck') {
+              this.eatenPolecats.delete(unitKey)
+            } else {
+              return
+            }
+          }
+
+          let unit = this.units.get(unitKey)
           if (!unit) {
-            // New polecat — add it to the appropriate village
-            unit = this.addPolecatToVillage(pc.rig, pc.name)
+            // New polecat — add it to the appropriate colony
+            unit = this.addPolecatToColony(pc.rig, pc.name)
           }
           if (unit) {
             const oldStatus = unit.status
@@ -1249,9 +1261,9 @@ export class GameScene extends Phaser.Scene {
       }
       this.events.emit('stateUpdated', state)
 
-      // Update village navigator in UI
-      if (uiScene?.updateVillageNavigator) {
-        uiScene.updateVillageNavigator()
+      // Update colony navigator in UI
+      if (uiScene?.updateColonyNavigator) {
+        uiScene.updateColonyNavigator()
       }
       if (uiScene?.updateMiniStatusBar) {
         uiScene.updateMiniStatusBar()
@@ -1353,15 +1365,16 @@ export class GameScene extends Phaser.Scene {
       onComplete: () => {
         seaLion.destroy()
         splash.destroy()
-        // Remove the unit from the game
+        // Remove the unit from the game and mark as eaten
         this.units.delete(unitId)
+        this.eatenPolecats.add(unitId)
         unit.destroy()
 
-        // Also remove from village's polecat list
-        for (const village of this.villages) {
-          const idx = village.polecats?.indexOf(unitName)
+        // Also remove from colony's polecat list
+        for (const colony of this.colonies) {
+          const idx = colony.polecats?.indexOf(unitName)
           if (idx > -1) {
-            village.polecats.splice(idx, 1)
+            colony.polecats.splice(idx, 1)
           }
         }
 

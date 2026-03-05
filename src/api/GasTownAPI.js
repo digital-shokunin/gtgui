@@ -24,12 +24,12 @@ export class GasTownAPI {
     return this.request('/status')
   }
 
-  // Get list of rigs
+  // Get list of teams (rigs)
   async getRigs() {
     return this.request('/rigs')
   }
 
-  // Create a new rig
+  // Create a new team
   async createRig(name) {
     return this.request('/rigs', {
       method: 'POST',
@@ -37,45 +37,24 @@ export class GasTownAPI {
     })
   }
 
-  // Clone a repo into a rig
-  async cloneRepo(rigName, repo, branch = null) {
-    return this.request(`/rigs/${rigName}/clone`, {
-      method: 'POST',
-      body: JSON.stringify({ repo, branch })
-    })
-  }
-
-  // Spawn a polecat in a rig
-  async spawnPolecat(rigName, polecatName = null) {
+  // Spawn a teammate in a team
+  async spawnPolecat(rigName, polecatName = null, cwd = null) {
     return this.request(`/rigs/${rigName}/polecats`, {
       method: 'POST',
-      body: JSON.stringify({ polecatName })
+      body: JSON.stringify({ polecatName, cwd })
     })
   }
 
-  // Get polecats for a rig
+  // Get teammates for a team
   async getPolecats(rigName) {
     return this.request(`/rigs/${rigName}/polecats`)
   }
 
-  // Get convoy status
-  async getConvoys() {
-    return this.request('/convoys')
-  }
-
-  // Sling work to an agent
+  // Assign work to an agent
   async sling(agentId, issueId) {
     return this.request('/sling', {
       method: 'POST',
       body: JSON.stringify({ agent: agentId, issue: issueId })
-    })
-  }
-
-  // Send mail
-  async sendMail(to, subject, message) {
-    return this.request('/mail/send', {
-      method: 'POST',
-      body: JSON.stringify({ to, subject, message })
     })
   }
 
@@ -89,7 +68,7 @@ export class GasTownAPI {
     return this.request(`/agents/${encodeURIComponent(agentId)}/logs?lines=${lines}`)
   }
 
-  // Open SSE stream for live log tailing — returns EventSource
+  // Open SSE stream for live log tailing
   openLogStream(agentId) {
     const encoded = encodeURIComponent(agentId)
     return new EventSource(`${this.baseUrl}/agents/${encoded}/logs/stream`)
@@ -133,7 +112,7 @@ export class GasTownAPI {
     })
   }
 
-  // Simulate agent getting stuck (for testing sea lion animation)
+  // Simulate agent getting stuck (for testing)
   async simulateStuck(agentId) {
     return this.request(`/agents/${encodeURIComponent(agentId)}/simulate-stuck`, {
       method: 'POST'
@@ -142,7 +121,6 @@ export class GasTownAPI {
 
   // ===== ACTIVITY FEED =====
 
-  // Get activity feed
   async getActivityFeed(options = {}) {
     const params = new URLSearchParams()
     if (options.limit) params.append('limit', options.limit)
@@ -155,13 +133,11 @@ export class GasTownAPI {
 
   // ===== TASK QUEUE =====
 
-  // Get task queue
   async getTaskQueue(project = null) {
     const params = project ? `?project=${encodeURIComponent(project)}` : ''
     return this.request(`/taskqueue${params}`)
   }
 
-  // Add task to queue
   async addTask(task) {
     return this.request('/taskqueue', {
       method: 'POST',
@@ -169,7 +145,6 @@ export class GasTownAPI {
     })
   }
 
-  // Update task in queue
   async updateTask(taskId, updates) {
     return this.request(`/taskqueue/${encodeURIComponent(taskId)}`, {
       method: 'PUT',
@@ -177,14 +152,12 @@ export class GasTownAPI {
     })
   }
 
-  // Remove task from queue
   async removeTask(taskId) {
     return this.request(`/taskqueue/${encodeURIComponent(taskId)}`, {
       method: 'DELETE'
     })
   }
 
-  // Assign task from queue to agent
   async assignTask(taskId, agent, rig = null) {
     return this.request(`/taskqueue/${encodeURIComponent(taskId)}/assign`, {
       method: 'POST',
@@ -194,12 +167,10 @@ export class GasTownAPI {
 
   // ===== COST DASHBOARD =====
 
-  // Get cost dashboard data
   async getCostDashboard() {
     return this.request('/costs/dashboard')
   }
 
-  // Record token usage
   async recordCost(agent, project, tokens) {
     return this.request('/costs/record', {
       method: 'POST',
@@ -207,7 +178,6 @@ export class GasTownAPI {
     })
   }
 
-  // Export cost CSV
   getCostExportUrl(from, to) {
     const params = new URLSearchParams()
     if (from) params.append('from', from)
@@ -217,7 +187,6 @@ export class GasTownAPI {
 
   // ===== GITHUB INTEGRATION =====
 
-  // Get tracked PRs
   async getGitHubPRs(options = {}) {
     const params = new URLSearchParams()
     if (options.project) params.append('project', options.project)
@@ -226,7 +195,6 @@ export class GasTownAPI {
     return this.request(`/github/prs?${params.toString()}`)
   }
 
-  // Track a new PR
   async trackPR(prData) {
     return this.request('/github/prs', {
       method: 'POST',
@@ -234,7 +202,6 @@ export class GasTownAPI {
     })
   }
 
-  // Update PR status
   async updatePR(prId, updates) {
     return this.request(`/github/prs/${encodeURIComponent(prId)}`, {
       method: 'PUT',
@@ -242,7 +209,6 @@ export class GasTownAPI {
     })
   }
 
-  // Remove PR tracking
   async removePR(prId) {
     return this.request(`/github/prs/${encodeURIComponent(prId)}`, {
       method: 'DELETE'
@@ -251,7 +217,6 @@ export class GasTownAPI {
 
   // ===== BATCH OPERATIONS =====
 
-  // Stop multiple agents
   async batchStop(agents) {
     return this.request('/batch/stop', {
       method: 'POST',
@@ -259,7 +224,6 @@ export class GasTownAPI {
     })
   }
 
-  // Mark multiple agents as complete
   async batchComplete(agents) {
     return this.request('/batch/complete', {
       method: 'POST',
@@ -267,8 +231,7 @@ export class GasTownAPI {
     })
   }
 
-  // Spawn multiple agents
-  async batchSpawn(rig, count, prefix = 'polecat') {
+  async batchSpawn(rig, count, prefix = 'agent') {
     return this.request('/batch/spawn', {
       method: 'POST',
       body: JSON.stringify({ rig, count, prefix })
@@ -277,12 +240,10 @@ export class GasTownAPI {
 
   // ===== PROJECT TEMPLATES =====
 
-  // Get all templates
   async getTemplates() {
     return this.request('/templates')
   }
 
-  // Create template from existing rig
   async createTemplate(templateData) {
     return this.request('/templates', {
       method: 'POST',
@@ -290,7 +251,6 @@ export class GasTownAPI {
     })
   }
 
-  // Create project from template
   async createFromTemplate(templateId, projectName) {
     return this.request(`/templates/${encodeURIComponent(templateId)}/create`, {
       method: 'POST',
@@ -298,10 +258,49 @@ export class GasTownAPI {
     })
   }
 
-  // Delete template
   async deleteTemplate(templateId) {
     return this.request(`/templates/${encodeURIComponent(templateId)}`, {
       method: 'DELETE'
+    })
+  }
+
+  // ===== EMPEROR =====
+
+  async startEmperor() {
+    return this.request('/emperor/start', { method: 'POST' })
+  }
+
+  async getEmperorStatus() {
+    return this.request('/emperor/status')
+  }
+
+  async sendEmperorMessage(message) {
+    return this.request('/emperor/message', {
+      method: 'POST',
+      body: JSON.stringify({ message })
+    })
+  }
+
+  openEmperorStream() {
+    return new EventSource(`${this.baseUrl}/emperor/stream`)
+  }
+
+  // ===== OPERATIONS DASHBOARD =====
+
+  async getOperations() {
+    return this.request('/operations')
+  }
+
+  // ===== AGENT TEAMS TASKS (NEW) =====
+
+  async getTeamTasks(teamName) {
+    return this.request(`/teams/${encodeURIComponent(teamName)}/tasks`)
+  }
+
+  async createTeamTask(teamName, task) {
+    return this.request(`/teams/${encodeURIComponent(teamName)}/tasks`, {
+      method: 'POST',
+      body: JSON.stringify(task)
     })
   }
 }
