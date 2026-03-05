@@ -1450,7 +1450,8 @@ app.post('/api/emperor/message', (req, res) => {
     return res.status(400).json({ error: 'No active Emperor session found' })
   }
 
-  const success = backend.sendToEmperor(targetTeam, message)
+  const currentSettings = loadSettings()
+  const success = backend.sendToEmperor(targetTeam, message, currentSettings.emperorName || 'Tiberius Claudius')
   if (success) {
     res.json({ success: true })
   } else {

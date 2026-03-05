@@ -608,7 +608,7 @@ export class AgentTeamsBackend {
     return true
   }
 
-  sendToEmperor(teamName, msg) {
+  sendToEmperor(teamName, msg, emperorName = 'Tiberius Claudius') {
     const key = this._sessionKey(teamName, 'emperor')
     const session = this.sessions.get(key)
 
@@ -622,7 +622,7 @@ export class AgentTeamsBackend {
       }).join('\n')
 
       const context = [
-        'You are the Emperor — the colony coordinator for Penguin Colony.',
+        `You are ${emperorName}, the Emperor — colony coordinator for Penguin Colony.`,
         'You manage teams of Claude Code agents that work on software projects.',
         '',
         'Your capabilities:',

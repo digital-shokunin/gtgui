@@ -286,22 +286,25 @@ export class UIScene extends Phaser.Scene {
   // ===== SETTINGS PANEL =====
 
   loadSettings() {
+    const defaults = {
+      stuckTokenThreshold: 25000,
+      stuckTimeThreshold: 1800000,  // 30 min
+      enableSounds: true,
+      enableNotifications: true,
+      emperorName: 'Tiberius Claudius'
+    }
     try {
       const saved = localStorage.getItem('gtgui_settings')
-      this.settings = saved ? JSON.parse(saved) : {
-        stuckTokenThreshold: 25000,
-        stuckTimeThreshold: 1800000,  // 30 min
-        enableSounds: true,
-        enableNotifications: true
-      }
+      this.settings = saved ? { ...defaults, ...JSON.parse(saved) } : { ...defaults }
     } catch (e) {
-      this.settings = {
-        stuckTokenThreshold: 25000,
-        stuckTimeThreshold: 1800000,
-        enableSounds: true,
-        enableNotifications: true
-      }
+      this.settings = { ...defaults }
     }
+    // Sync emperorName from server if available
+    this.api.getSettings().then(serverSettings => {
+      if (serverSettings.emperorName) {
+        this.settings.emperorName = serverSettings.emperorName
+      }
+    }).catch(() => {})
   }
 
   saveSettings() {
@@ -314,7 +317,7 @@ export class UIScene extends Phaser.Scene {
     const width = this.cameras.main.width
 
     // Gear icon button in top bar (left of town name, right of Online indicator)
-    const btnX = width - 210
+    const btnX = width - 250
     const btnY = 33
 
     this.settingsBtn = this.add.container(btnX, btnY)
@@ -364,7 +367,7 @@ export class UIScene extends Phaser.Scene {
     const width = this.cameras.main.width
     const height = this.cameras.main.height
     const panelWidth = 400
-    const panelHeight = 500
+    const panelHeight = 560
 
     this.settingsPanel = this.add.container(width/2, height/2)
     this.settingsPanel.setDepth(1500)
@@ -398,8 +401,7 @@ export class UIScene extends Phaser.Scene {
     }).setOrigin(0.5)
     closeBtn.setInteractive({ useHandCursor: true })
     closeBtn.on('pointerup', () => {
-      this.settingsPanel.destroy()
-      this.settingsPanel = null
+      this._closeSettingsPanel()
     })
 
     this.settingsPanel.add([backdrop, panel, title, closeBtn])
@@ -421,7 +423,43 @@ export class UIScene extends Phaser.Scene {
 
     // Notification toggle
     this.addSettingToggle('Show Notifications', 'enableNotifications', yPos)
-    yPos += 50
+    yPos += 55
+
+    // Emperor Name text field
+    const nameLabel = this.add.text(-panelWidth/2 + 25, yPos, 'Emperor Name', {
+      font: 'bold 14px Fredoka',
+      fill: '#333333'
+    })
+    this.settingsPanel.add(nameLabel)
+
+    // Use a DOM input for text entry
+    const inputId = 'emperor-name-input'
+    let nameInput = document.getElementById(inputId)
+    if (nameInput) nameInput.remove()
+    nameInput = document.createElement('input')
+    nameInput.id = inputId
+    nameInput.type = 'text'
+    nameInput.value = this.settings.emperorName || 'Tiberius Claudius'
+    nameInput.style.cssText = `
+      position: fixed;
+      left: ${width/2 - panelWidth/2 + 25}px;
+      top: ${height/2 - panelHeight/2 + 60 + yPos + 22}px;
+      width: ${panelWidth - 50}px;
+      height: 32px;
+      font-family: 'Fredoka', sans-serif;
+      font-size: 14px;
+      padding: 4px 10px;
+      border: 2px solid #B0E0E6;
+      border-radius: 8px;
+      outline: none;
+      box-sizing: border-box;
+    `
+    nameInput.onfocus = () => { nameInput.style.borderColor = '#0077B6' }
+    nameInput.onblur = () => { nameInput.style.borderColor = '#B0E0E6' }
+    nameInput.oninput = () => { this.settings.emperorName = nameInput.value }
+    document.body.appendChild(nameInput)
+    this._emperorNameInput = nameInput
+    yPos += 60
 
     // Divider line
     const divider = this.add.graphics()
@@ -448,8 +486,7 @@ export class UIScene extends Phaser.Scene {
     const stuckZone = this.add.zone(-80, yPos + 20, 140, 40)
     stuckZone.setInteractive({ useHandCursor: true })
     stuckZone.on('pointerup', () => {
-      this.settingsPanel.destroy()
-      this.settingsPanel = null
+      this._closeSettingsPanel()
       this.showSimulateStuckPicker()
     })
     this.settingsPanel.add([stuckBtn, stuckText, stuckZone])
@@ -467,8 +504,7 @@ export class UIScene extends Phaser.Scene {
     saveZone.on('pointerup', () => {
       this.saveSettings()
       this.showNotification('success', 'Settings Saved', 'Your preferences have been updated')
-      this.settingsPanel.destroy()
-      this.settingsPanel = null
+      this._closeSettingsPanel()
     })
 
     this.settingsPanel.add([saveBtn, saveText, saveZone])
@@ -483,6 +519,17 @@ export class UIScene extends Phaser.Scene {
       duration: 200,
       ease: 'Back.easeOut'
     })
+  }
+
+  _closeSettingsPanel() {
+    if (this._emperorNameInput) {
+      this._emperorNameInput.remove()
+      this._emperorNameInput = null
+    }
+    if (this.settingsPanel) {
+      this.settingsPanel.destroy()
+      this.settingsPanel = null
+    }
   }
 
   addSettingSlider(label, key, min, max, y, format) {
@@ -791,7 +838,7 @@ export class UIScene extends Phaser.Scene {
     const width = this.cameras.main.width
 
     // Users container (positioned to the left of settings gear, vertically centered in header)
-    this.usersContainer = this.add.container(width - 255, 33)
+    this.usersContainer = this.add.container(width - 295, 33)
 
     // "Online:" label
     this.usersLabel = this.add.text(0, 0, 'Online:', {
@@ -2648,15 +2695,16 @@ export class UIScene extends Phaser.Scene {
 
     const emperorAvatar = this.add.image(45, 35, 'unit-emperor').setScale(0.6)
 
-    // Title
-    const title = this.add.text(85, 20, 'EMPEROR', {
-      font: 'bold 22px Fredoka',
+    // Title — show Emperor's configured name
+    const emperorName = this.settings?.emperorName || 'Tiberius Claudius'
+    const title = this.add.text(85, 20, emperorName.toUpperCase(), {
+      font: 'bold 18px Fredoka',
       fill: '#FFFFFF',
       stroke: '#6B3510',
       strokeThickness: 2
     })
 
-    const subtitle = this.add.text(85, 44, 'Colony Coordinator', {
+    const subtitle = this.add.text(85, 44, 'Emperor - Colony Coordinator', {
       font: '13px Fredoka',
       fill: '#D2B48C'
     })
