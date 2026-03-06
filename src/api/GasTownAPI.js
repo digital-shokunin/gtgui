@@ -308,4 +308,21 @@ export class GasTownAPI {
       body: JSON.stringify(task)
     })
   }
+
+  // ===== AGENT MESSAGING =====
+
+  // Send a follow-up message to an agent's tmux session
+  async sendAgentMessage(agentId, message) {
+    return this.request(`/agents/${encodeURIComponent(agentId)}/message`, {
+      method: 'POST',
+      body: JSON.stringify({ message })
+    })
+  }
+
+  // Resume a dead agent session using its saved Claude session ID
+  async resumeAgent(agentId) {
+    return this.request(`/agents/${encodeURIComponent(agentId)}/resume`, {
+      method: 'POST'
+    })
+  }
 }

@@ -1,5 +1,6 @@
 import Phaser from 'phaser'
 import { GasTownAPI } from '../api/GasTownAPI.js'
+import '@xterm/xterm/css/xterm.css'
 
 export class UIScene extends Phaser.Scene {
   constructor() {
@@ -4931,26 +4932,50 @@ export class UIScene extends Phaser.Scene {
     window.open(url, '_blank')
   }
 
-  // ===== AGENT OUTPUT VIEWER =====
+  // ===== AGENT OUTPUT VIEWER (xterm.js interactive terminal) =====
 
   createAgentOutputViewer() {
     // This modal is created on-demand when viewing output
     this.outputViewer = null
   }
 
+  _closeOutputViewer() {
+    // Clean up terminal
+    if (this._termSocket) {
+      this._termSocket.disconnect()
+      this._termSocket = null
+    }
+    if (this._term) {
+      this._term.dispose()
+      this._term = null
+    }
+    if (this._termContainer) {
+      this._termContainer.remove()
+      this._termContainer = null
+    }
+    if (this._logPollInterval) {
+      clearInterval(this._logPollInterval)
+      this._logPollInterval = null
+    }
+    // Re-enable Phaser keyboard
+    this.input.keyboard.enabled = true
+    this.input.keyboard.startListeners()
+
+    if (this.outputViewer) {
+      this.outputViewer.destroy()
+      this.outputViewer = null
+    }
+  }
+
   async showAgentOutput(agentId, rigName) {
     const width = this.cameras.main.width
     const height = this.cameras.main.height
-    const modalWidth = Math.min(900, width - 60)
-    const modalHeight = Math.min(600, height - 60)
+    const modalWidth = Math.min(1100, width - 40)
+    const modalHeight = Math.min(700, height - 40)
 
     // Destroy existing viewer if open
     if (this.outputViewer) {
-      if (this._logPollInterval) {
-        clearInterval(this._logPollInterval)
-        this._logPollInterval = null
-      }
-      this.outputViewer.destroy()
+      this._closeOutputViewer()
     }
 
     this.outputViewer = this.add.container(width/2, height/2)
@@ -4965,23 +4990,23 @@ export class UIScene extends Phaser.Scene {
 
     // Panel
     const panel = this.add.graphics()
-    this.drawGlossyPanel(panel, -modalWidth/2, -modalHeight/2, modalWidth, modalHeight, 0x2C3E50, 20)
-    panel.fillStyle(0x1E272E, 1)
-    panel.fillRoundedRect(-modalWidth/2 + 10, -modalHeight/2 + 60, modalWidth - 20, modalHeight - 80, 12)
+    this.drawGlossyPanel(panel, -modalWidth/2, -modalHeight/2, modalWidth, modalHeight, 0x1A1A2E, 20)
+    panel.fillStyle(0x0D0D1A, 1)
+    panel.fillRoundedRect(-modalWidth/2 + 10, -modalHeight/2 + 50, modalWidth - 20, modalHeight - 60, 12)
 
     // Title — truncate agent path if too long for modal
     const maxTitleLen = Math.floor((modalWidth - 200) / 10)
     const displayId = agentId.length > maxTitleLen ? '...' + agentId.slice(-maxTitleLen) : agentId
-    const title = this.add.text(-modalWidth/2 + 20, -modalHeight/2 + 30, `AGENT OUTPUT: ${displayId}`, {
-      font: 'bold 16px Fredoka',
+    const title = this.add.text(-modalWidth/2 + 20, -modalHeight/2 + 25, `TERMINAL: ${displayId}`, {
+      font: 'bold 14px Fredoka',
       fill: '#FFFFFF',
       stroke: '#1A252F',
       strokeThickness: 2
     }).setOrigin(0, 0.5)
 
-    // Session status indicator (far right of title bar)
+    // Session status indicator
     const sessionDot = this.add.graphics()
-    const sessionLabel = this.add.text(modalWidth/2 - 60, -modalHeight/2 + 30, 'loading...', {
+    const sessionLabel = this.add.text(modalWidth/2 - 60, -modalHeight/2 + 25, 'connecting...', {
       font: '11px Fredoka',
       fill: '#7F8C8D'
     }).setOrigin(1, 0.5)
@@ -4989,171 +5014,220 @@ export class UIScene extends Phaser.Scene {
     // Close button
     const closeBtn = this.add.graphics()
     closeBtn.fillStyle(0xFF6B6B, 0.9)
-    closeBtn.fillCircle(modalWidth/2 - 25, -modalHeight/2 + 25, 14)
-    const closeX = this.add.text(modalWidth/2 - 25, -modalHeight/2 + 25, '\u00d7', {
+    closeBtn.fillCircle(modalWidth/2 - 25, -modalHeight/2 + 20, 14)
+    const closeX = this.add.text(modalWidth/2 - 25, -modalHeight/2 + 20, '\u00d7', {
       font: 'bold 18px Fredoka',
       fill: '#FFFFFF'
     }).setOrigin(0.5)
-    const closeZone = this.add.zone(modalWidth/2 - 25, -modalHeight/2 + 25, 28, 28).setInteractive({ useHandCursor: true })
+    const closeZone = this.add.zone(modalWidth/2 - 25, -modalHeight/2 + 20, 28, 28).setInteractive({ useHandCursor: true })
     closeZone.on('pointerup', () => {
-      if (this._logPollInterval) {
-        clearInterval(this._logPollInterval)
-        this._logPollInterval = null
-      }
-      this.outputViewer.destroy()
-      this.outputViewer = null
+      this._closeOutputViewer()
     })
 
     this.outputViewer.add([backdrop, panel, title, sessionDot, sessionLabel, closeBtn, closeX, closeZone])
 
-    // Loading text
-    const loading = this.add.text(0, 0, 'Loading logs...', {
-      font: '14px Fredoka',
-      fill: '#7F8C8D'
-    }).setOrigin(0.5)
-    this.outputViewer.add(loading)
+    // Disable Phaser keyboard to let xterm.js handle input
+    this.input.keyboard.enabled = false
+    this.input.keyboard.stopListeners()
 
-    // Fetch agent logs + status
+    // Get the canvas position to overlay the DOM terminal
+    const canvas = this.game.canvas
+    const canvasRect = canvas.getBoundingClientRect()
+
+    // Calculate terminal position in page coords
+    const termLeft = canvasRect.left + (width - modalWidth) / 2 + 15
+    const termTop = canvasRect.top + (height - modalHeight) / 2 + 55
+    const termWidth = modalWidth - 30
+    const termHeight = modalHeight - 65
+
+    // Fetch hook data for status bar
     try {
-      const [logData, hookData] = await Promise.all([
-        this.api.getAgentLogs(agentId),
-        this.api.getHook(agentId)
-      ])
-      loading.destroy()
+      const hookData = await this.api.getHook(agentId)
+      this._updateSessionIndicator(sessionDot, sessionLabel, hookData.sessionAlive !== false)
+    } catch { /* ignore */ }
 
-      // Update session indicator
-      this._updateSessionIndicator(sessionDot, sessionLabel, logData.sessionActive)
+    // Create DOM container for xterm.js
+    const termContainer = document.createElement('div')
+    termContainer.id = 'colony-terminal'
+    termContainer.style.cssText = `
+      position: fixed;
+      left: ${termLeft}px;
+      top: ${termTop}px;
+      width: ${termWidth}px;
+      height: ${termHeight}px;
+      z-index: 10000;
+      border-radius: 8px;
+      overflow: hidden;
+      background: #0D0D1A;
+    `
+    document.body.appendChild(termContainer)
+    this._termContainer = termContainer
 
-      // Status header line
-      const statusHeader = this.formatStatusHeader(hookData)
-      const headerText = this.add.text(-modalWidth/2 + 25, -modalHeight/2 + 68, statusHeader, {
-        font: '11px monospace',
-        fill: '#F39C12',
-        wordWrap: { width: modalWidth - 50 }
-      })
-      this.outputViewer.add(headerText)
+    // Dynamically import xterm.js
+    const { Terminal } = await import('@xterm/xterm')
+    const { FitAddon } = await import('@xterm/addon-fit')
 
-      // Log text area — starts below the status header with enough space
-      const headerHeight = headerText.height || 14
-      const logAreaY = -modalHeight/2 + 72 + headerHeight + 8
-      const logAreaHeight = modalHeight - (72 + headerHeight + 8) - 70
-      const logContent = logData.logs || '(No session output available)'
+    const term = new Terminal({
+      cursorBlink: true,
+      fontSize: 13,
+      fontFamily: '"Fira Code", "Cascadia Code", Menlo, Monaco, "Courier New", monospace',
+      theme: {
+        background: '#0D0D1A',
+        foreground: '#E0E0E0',
+        cursor: '#F39C12',
+        cursorAccent: '#0D0D1A',
+        selectionBackground: '#264F78',
+        black: '#1A1A2E',
+        red: '#E74C3C',
+        green: '#2ECC71',
+        yellow: '#F39C12',
+        blue: '#3498DB',
+        magenta: '#9B59B6',
+        cyan: '#1ABC9C',
+        white: '#ECF0F1',
+        brightBlack: '#7F8C8D',
+        brightRed: '#E74C3C',
+        brightGreen: '#2ECC71',
+        brightYellow: '#F1C40F',
+        brightBlue: '#3498DB',
+        brightMagenta: '#9B59B6',
+        brightCyan: '#1ABC9C',
+        brightWhite: '#FFFFFF'
+      },
+      allowProposedApi: true
+    })
 
-      // Truncate to fit display (Phaser text has limits)
-      const maxLines = Math.floor(logAreaHeight / 14)
-      const logLines = logContent.split('\n')
-      const displayedLines = logLines.slice(-maxLines).join('\n')
+    const fitAddon = new FitAddon()
+    term.loadAddon(fitAddon)
+    term.open(termContainer)
+    fitAddon.fit()
+    this._term = term
+    this._fitAddon = fitAddon
 
-      const logText = this.add.text(-modalWidth/2 + 25, logAreaY, displayedLines, {
-        font: '11px monospace',
-        fill: '#2ECC71',
-        wordWrap: { width: modalWidth - 50 }
-      })
-      this.outputViewer.add(logText)
-
-      // Store reference for polling updates
-      this._logText = logText
-      this._logHeaderText = headerText
-      this._logSessionDot = sessionDot
-      this._logSessionLabel = sessionLabel
-      this._logMaxLines = maxLines
-
-      // Action buttons at bottom
-      const btnY = modalHeight/2 - 45
-
-      // Copy button
-      const copyBtn = this.add.graphics()
-      this.drawButton(copyBtn, -modalWidth/2 + 20, btnY, 120, 36, 0x3498DB, true)
-      const copyText = this.add.text(-modalWidth/2 + 80, btnY + 18, 'COPY', {
-        font: 'bold 12px Fredoka',
-        fill: '#FFFFFF'
-      }).setOrigin(0.5)
-      const copyZone = this.add.zone(-modalWidth/2 + 80, btnY + 18, 120, 36).setInteractive({ useHandCursor: true })
-      copyZone.on('pointerup', () => {
-        navigator.clipboard.writeText(logContent)
-        this.showNotification('success', 'Copied', 'Logs copied to clipboard')
-      })
-      this.outputViewer.add([copyBtn, copyText, copyZone])
-
-      // Refresh button
-      const refreshBtn = this.add.graphics()
-      this.drawButton(refreshBtn, -modalWidth/2 + 150, btnY, 120, 36, 0x27AE60, true)
-      const refreshText = this.add.text(-modalWidth/2 + 210, btnY + 18, 'REFRESH', {
-        font: 'bold 12px Fredoka',
-        fill: '#FFFFFF'
-      }).setOrigin(0.5)
-      const refreshZone = this.add.zone(-modalWidth/2 + 210, btnY + 18, 120, 36).setInteractive({ useHandCursor: true })
-      refreshZone.on('pointerup', () => {
-        this._refreshLogs(agentId)
-      })
-      this.outputViewer.add([refreshBtn, refreshText, refreshZone])
-
-      // Start auto-refresh polling (every 3 seconds)
-      this._logPollInterval = setInterval(() => {
-        if (this.outputViewer && this._outputViewerAgentId === agentId) {
-          this._refreshLogs(agentId)
-        } else {
-          clearInterval(this._logPollInterval)
-          this._logPollInterval = null
-        }
-      }, 3000)
-
-    } catch (e) {
-      loading.setText(`Failed to load: ${e.message}`)
-      loading.setStyle({ fill: '#E74C3C' })
+    // Derive tmux session name from agentId
+    // agentId format is "teamName/memberName" — tmux name is "colony_teamName_memberName"
+    const parts = agentId.split('/')
+    let tmuxSessionName
+    if (parts.length >= 2) {
+      tmuxSessionName = `colony_${parts[0]}_${parts[parts.length - 1]}`
+    } else {
+      tmuxSessionName = `colony_default_${parts[0]}`
     }
 
-    // Animate in
-    this.outputViewer.setScale(0.8)
+    // Connect to terminal WebSocket
+    const { io } = await import('socket.io-client')
+    const socket = io('/terminal', {
+      transports: ['websocket']
+    })
+    this._termSocket = socket
+
+    socket.on('connect', () => {
+      term.writeln('\x1b[33mConnecting to tmux session...\x1b[0m')
+      socket.emit('attach', {
+        sessionName: tmuxSessionName,
+        cols: term.cols,
+        rows: term.rows
+      })
+    })
+
+    socket.on('attached', (data) => {
+      this._updateSessionIndicator(sessionDot, sessionLabel, true)
+      // Clear the "connecting" message
+      term.clear()
+    })
+
+    socket.on('output', (data) => {
+      term.write(data)
+    })
+
+    socket.on('error', (data) => {
+      term.writeln(`\x1b[31mError: ${data.message}\x1b[0m`)
+      term.writeln('\x1b[33mFalling back to read-only log view...\x1b[0m')
+      this._updateSessionIndicator(sessionDot, sessionLabel, false)
+
+      // Fallback: show captured logs
+      this._showFallbackLogs(agentId, term)
+    })
+
+    socket.on('exit', (data) => {
+      term.writeln(`\x1b[33m\r\n--- Session detached (exit code: ${data.code}) ---\x1b[0m`)
+      this._updateSessionIndicator(sessionDot, sessionLabel, false)
+    })
+
+    socket.on('disconnect', () => {
+      this._updateSessionIndicator(sessionDot, sessionLabel, false)
+    })
+
+    // Forward terminal input to server
+    term.onData((data) => {
+      socket.emit('input', data)
+    })
+
+    // Handle resize
+    term.onResize(({ cols, rows }) => {
+      socket.emit('resize', { cols, rows })
+    })
+
+    // Animate the Phaser overlay in
+    this.outputViewer.setScale(0.95)
     this.outputViewer.setAlpha(0)
     this.tweens.add({
       targets: this.outputViewer,
       scale: 1,
       alpha: 1,
-      duration: 200,
-      ease: 'Back.easeOut'
+      duration: 150,
+      ease: 'Power2'
     })
+
+    // Focus the terminal
+    setTimeout(() => {
+      term.focus()
+      fitAddon.fit()
+    }, 200)
   }
 
-  async _refreshLogs(agentId) {
+  async _showFallbackLogs(agentId, term) {
     try {
-      const [logData, hookData] = await Promise.all([
-        this.api.getAgentLogs(agentId),
-        this.api.getHook(agentId)
-      ])
-
-      if (this._logText && this._logText.active) {
-        const logLines = (logData.logs || '').split('\n')
-        const displayedLines = logLines.slice(-this._logMaxLines).join('\n')
-        this._logText.setText(displayedLines)
+      const logData = await this.api.getAgentLogs(agentId)
+      const logs = logData.logs || '(No session output available)'
+      term.writeln('')
+      for (const line of logs.split('\n')) {
+        term.writeln(line)
       }
 
-      if (this._logHeaderText && this._logHeaderText.active) {
-        this._logHeaderText.setText(this.formatStatusHeader(hookData))
-      }
-
-      if (this._logSessionDot && this._logSessionLabel) {
-        this._updateSessionIndicator(this._logSessionDot, this._logSessionLabel, logData.sessionActive)
-      }
+      // Start polling for updates
+      let lastLen = logs.length
+      this._logPollInterval = setInterval(async () => {
+        try {
+          const updated = await this.api.getAgentLogs(agentId)
+          const newLogs = updated.logs || ''
+          if (newLogs.length > lastLen) {
+            const newContent = newLogs.slice(lastLen)
+            for (const line of newContent.split('\n')) {
+              if (line) term.writeln(line)
+            }
+            lastLen = newLogs.length
+          }
+        } catch { /* ignore */ }
+      }, 3000)
     } catch (e) {
-      // Silent fail on refresh — don't disrupt the UI
+      term.writeln(`\x1b[31mFailed to load logs: ${e.message}\x1b[0m`)
     }
   }
 
   _updateSessionIndicator(dot, label, isActive) {
     dot.clear()
-    // Position dot just to the left of the label
     const dotX = label.x - label.width - 12
     const dotY = label.y
     if (isActive) {
       dot.fillStyle(0x2ECC71, 1)
       dot.fillCircle(dotX, dotY, 5)
-      label.setText('SESSION LIVE')
+      label.setText('CONNECTED')
       label.setStyle({ fill: '#2ECC71' })
     } else {
       dot.fillStyle(0xE74C3C, 1)
       dot.fillCircle(dotX, dotY, 5)
-      label.setText('NO SESSION')
+      label.setText('DISCONNECTED')
       label.setStyle({ fill: '#E74C3C' })
     }
   }

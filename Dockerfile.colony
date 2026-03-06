@@ -1,0 +1,27 @@
+FROM ubuntu:24.04
+
+# System deps
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    tmux curl git ca-certificates nodejs npm \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Claude Code CLI
+RUN npm install -g @anthropic-ai/claude-code
+
+# Create non-root agent user
+RUN useradd -m -s /bin/bash agent
+
+# Supply chain hardening (Trail of Bits)
+ENV NPM_CONFIG_IGNORE_SCRIPTS=true
+ENV NPM_CONFIG_AUDIT_LEVEL=critical
+ENV PIP_REQUIRE_HASHES=true
+ENV PIP_NO_CACHE_DIR=true
+
+# Deny sensitive paths via Claude config (applied at runtime via mount)
+# ~/.claude/settings.json mounted read-only from host
+
+USER agent
+WORKDIR /workspace
+
+# Keep container alive (tmux sessions run inside)
+CMD ["sleep", "infinity"]

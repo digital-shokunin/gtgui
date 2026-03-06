@@ -4,37 +4,277 @@ import {
   readdirSync, readFileSync, writeFileSync, mkdirSync, existsSync,
   rmSync, statSync, unlinkSync, openSync, closeSync
 } from 'fs'
-import { spawn } from 'child_process'
-import { createInterface } from 'readline'
+import { execSync } from 'child_process'
 
 export class AgentTeamsBackend {
   constructor(config = {}) {
     this.claudePath = config.claudePath || 'claude'
     this.teamsRoot = config.teamsRoot || join(homedir(), '.claude', 'teams')
     this.tasksRoot = config.tasksRoot || join(homedir(), '.claude', 'tasks')
-
-    // Session registry: sessionKey → SessionState
-    this.sessions = new Map()
+    this.dockerEnabled = config.dockerEnabled ?? false
+    this.dockerImage = config.dockerImage || 'colony-sandbox'
+    this.claudeAuthDir = config.claudeAuthDir || join(homedir(), '.claude')
+    this.projectsRoot = config.projectsRoot || '/workspace'
+    this.containerMemory = config.containerMemory || '4g'
+    this.containerCpus = config.containerCpus || '2'
+    this.networkIsolation = config.networkIsolation ?? false
   }
 
-  _sessionKey(teamName, name) {
-    return `${teamName}/${name}`
+  // ===== DOCKER CONTAINER LIFECYCLE =====
+
+  _containerName(teamName) {
+    return `colony_${teamName}`
   }
 
-  _createSessionState(type) {
-    return {
-      type,                        // 'cli'
-      process: null,               // ChildProcess
-      sessionId: null,             // Claude session ID for resume
-      abortController: new AbortController(),
-      messages: [],                // Rolling buffer (max 500)
-      status: 'idle',             // 'running' | 'idle' | 'error'
-      costUsd: 0,
-      inputTokens: 0,
-      outputTokens: 0,
-      lastActivity: Date.now(),
-      streamListeners: new Set()
+  ensureContainer(teamName) {
+    if (!this.dockerEnabled) return
+    const name = this._containerName(teamName)
+
+    // Check if already running
+    try {
+      const state = execSync(
+        `docker inspect -f '{{.State.Running}}' ${JSON.stringify(name)} 2>/dev/null`,
+        { encoding: 'utf-8' }
+      ).trim()
+      if (state === 'true') return
+    } catch { /* container doesn't exist */ }
+
+    // Remove stopped container if exists
+    try { execSync(`docker rm -f ${JSON.stringify(name)} 2>/dev/null`) } catch {}
+
+    // Build docker run args
+    const args = [
+      'docker', 'run', '-d',
+      '--name', name,
+      '-v', `${this.claudeAuthDir}:/home/agent/.claude:ro`,
+      '-e', 'NPM_CONFIG_IGNORE_SCRIPTS=true',
+      '-e', 'NPM_CONFIG_AUDIT_LEVEL=critical',
+      '-e', 'CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1',
+      `--memory=${this.containerMemory}`,
+      `--cpus=${this.containerCpus}`,
+      '--cap-drop=ALL',
+      '--cap-add=DAC_OVERRIDE',
+      '--security-opt=no-new-privileges',
+    ]
+
+    if (this.networkIsolation) {
+      args.push('--network=none')
     }
+
+    args.push(this.dockerImage)
+
+    execSync(args.map(a => a.includes(' ') ? JSON.stringify(a) : a).join(' '))
+    console.log(`[docker] Started container: ${name}`)
+  }
+
+  stopContainer(teamName) {
+    if (!this.dockerEnabled) return
+    const name = this._containerName(teamName)
+    try {
+      execSync(`docker stop ${JSON.stringify(name)} && docker rm ${JSON.stringify(name)}`)
+      console.log(`[docker] Stopped container: ${name}`)
+    } catch {}
+  }
+
+  isContainerRunning(teamName) {
+    if (!this.dockerEnabled) return true  // passthrough when docker disabled
+    const name = this._containerName(teamName)
+    try {
+      const state = execSync(
+        `docker inspect -f '{{.State.Running}}' ${JSON.stringify(name)} 2>/dev/null`,
+        { encoding: 'utf-8' }
+      ).trim()
+      return state === 'true'
+    } catch { return false }
+  }
+
+  // Execute a command, routing through docker exec when enabled
+  _exec(teamName, cmd, options = {}) {
+    if (this.dockerEnabled && teamName) {
+      const container = this._containerName(teamName)
+      const dockerArgs = ['docker', 'exec']
+      if (options.interactive) dockerArgs.push('-it')
+      dockerArgs.push(container)
+      // cmd may be a string; wrap in bash -c for compound commands
+      const fullCmd = `${dockerArgs.join(' ')} bash -c ${JSON.stringify(cmd)}`
+      return execSync(fullCmd, {
+        encoding: options.encoding,
+        timeout: options.timeout
+      })
+    }
+    return execSync(cmd, { encoding: options.encoding, timeout: options.timeout })
+  }
+
+  // Parse teamName from a tmux session name (colony_{team}_{member})
+  _teamFromTmuxName(sessionName) {
+    const m = sessionName.match(/^colony_([^_]+)_/)
+    return m ? m[1] : null
+  }
+
+  // ===== TMUX SESSION MANAGEMENT =====
+
+  // Tmux session naming: colony_{teamName}_{memberName}
+  _tmuxName(teamName, memberName) {
+    return `colony_${teamName}_${memberName}`
+  }
+
+  // Spawn a new Claude Code interactive session in tmux
+  spawnTmuxSession(sessionName, prompt = null, options = {}) {
+    const teamName = options.teamName || this._teamFromTmuxName(sessionName)
+
+    let claudeCmd = this.claudePath + ' --dangerously-skip-permissions'
+    if (options.resumeSessionId) {
+      claudeCmd += ` --resume ${options.resumeSessionId}`
+    }
+    if (prompt && !options.resumeSessionId) {
+      // Escape for shell
+      const escaped = prompt.replace(/'/g, "'\\''")
+      claudeCmd += ` '${escaped}'`
+    }
+
+    // Set Agent Teams env var in the tmux session
+    const envPrefix = 'CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1'
+    const fullCmd = `${envPrefix} ${claudeCmd}`
+
+    // Escape session name for tmux
+    const safeSession = sessionName.replace(/'/g, "'\\''")
+    const safeCmd = fullCmd.replace(/'/g, "'\\''")
+    // Session auto-destroys when claude exits (no lingering shell)
+    const tmuxCmds = [
+      `tmux new-session -d -s '${safeSession}' '${safeCmd}'`,
+      `tmux set-option -t '${safeSession}' remain-on-exit off`,
+      `tmux set-option -t '${safeSession}' destroy-unattached off`
+    ].join(' && ')
+
+    if (this.dockerEnabled && teamName) {
+      this.ensureContainer(teamName)
+      this._exec(teamName, tmuxCmds)
+    } else {
+      execSync(tmuxCmds)
+    }
+    console.log(`[tmux] Spawned session: ${sessionName}`)
+  }
+
+  // Send a message to a running tmux session (type into it)
+  sendToTmuxSession(sessionName, message, options = {}) {
+    const teamName = options.teamName || this._teamFromTmuxName(sessionName)
+    const safeSession = sessionName.replace(/'/g, "'\\''")
+
+    if (this.dockerEnabled && teamName) {
+      // Pipe message into container via base64 to avoid shell escaping issues
+      const container = this._containerName(teamName)
+      const b64 = Buffer.from(message).toString('base64')
+      const innerCmd = `echo '${b64}' | base64 -d > /tmp/msg_$$ && tmux load-buffer /tmp/msg_$$ \\; paste-buffer -t '${safeSession}' \\; send-keys -t '${safeSession}' Enter && rm -f /tmp/msg_$$`
+      execSync(`docker exec ${JSON.stringify(container)} bash -c ${JSON.stringify(innerCmd)}`)
+      return
+    }
+
+    // Host-based: write temp file, load-buffer, paste-buffer
+    const tmpFile = `/tmp/colony_msg_${Date.now()}`
+    writeFileSync(tmpFile, message)
+    try {
+      execSync(`tmux load-buffer '${tmpFile}' \\; paste-buffer -t '${safeSession}' \\; send-keys -t '${safeSession}' Enter`)
+    } finally {
+      try { unlinkSync(tmpFile) } catch { /* ignore */ }
+    }
+  }
+
+  // Capture recent output from tmux pane
+  captureTmuxOutput(sessionName, lines = 200, options = {}) {
+    const teamName = options.teamName || this._teamFromTmuxName(sessionName)
+    try {
+      const safeSession = sessionName.replace(/'/g, "'\\''")
+      const cmd = `tmux capture-pane -t '${safeSession}' -p -S -${lines}`
+      return this._exec(teamName, cmd, { encoding: 'utf-8', timeout: 5000 })
+    } catch {
+      return null
+    }
+  }
+
+  // Check if a tmux session exists
+  isTmuxSessionAlive(sessionName, options = {}) {
+    const teamName = options.teamName || this._teamFromTmuxName(sessionName)
+    try {
+      const safeSession = sessionName.replace(/'/g, "'\\''")
+      const cmd = `tmux has-session -t '${safeSession}' 2>/dev/null`
+      this._exec(teamName, cmd)
+      return true
+    } catch {
+      return false
+    }
+  }
+
+  // Kill a tmux session
+  killTmuxSession(sessionName, options = {}) {
+    const teamName = options.teamName || this._teamFromTmuxName(sessionName)
+    try {
+      const safeSession = sessionName.replace(/'/g, "'\\''")
+      const cmd = `tmux kill-session -t '${safeSession}'`
+      this._exec(teamName, cmd)
+      console.log(`[tmux] Killed session: ${sessionName}`)
+      return true
+    } catch {
+      return false
+    }
+  }
+
+  // List all colony tmux sessions
+  // When docker is enabled and teamName given, list sessions inside that container
+  listTmuxSessions(teamName = null) {
+    const cmd = 'tmux list-sessions -F "#{session_name}" 2>/dev/null'
+    try {
+      if (this.dockerEnabled && teamName) {
+        if (!this.isContainerRunning(teamName)) return []
+        const output = this._exec(teamName, cmd, { encoding: 'utf-8', timeout: 5000 })
+        return output.trim().split('\n').filter(s => s.startsWith('colony_'))
+      }
+      const output = execSync(cmd, { encoding: 'utf-8', timeout: 5000 })
+      return output.trim().split('\n').filter(s => s.startsWith('colony_'))
+    } catch {
+      return []
+    }
+  }
+
+  // ===== PERSISTENT SESSION MAP =====
+  // Stored at ~/.claude/teams/{teamName}/sessions.json
+  // Maps member names to tmux session names + Claude session IDs
+
+  _getSessionMap(teamName) {
+    const mapPath = join(this.teamsRoot, teamName, 'sessions.json')
+    try {
+      if (!existsSync(mapPath)) return {}
+      return JSON.parse(readFileSync(mapPath, 'utf-8'))
+    } catch {
+      return {}
+    }
+  }
+
+  _saveSessionMap(teamName, map) {
+    const mapPath = join(this.teamsRoot, teamName, 'sessions.json')
+    try {
+      writeFileSync(mapPath, JSON.stringify(map, null, 2))
+    } catch (e) {
+      console.error(`[session-map] Failed to save for ${teamName}:`, e.message)
+    }
+  }
+
+  // On startup: reconcile session map with live tmux sessions
+  reassociateSessions(teamName) {
+    const map = this._getSessionMap(teamName)
+    const liveSessions = this.listTmuxSessions(teamName)
+    let changed = false
+
+    for (const [member, info] of Object.entries(map)) {
+      if (!info.tmuxSession) continue
+      const alive = liveSessions.includes(info.tmuxSession)
+      if (info.alive !== alive) {
+        info.alive = alive
+        changed = true
+      }
+    }
+
+    if (changed) this._saveSessionMap(teamName, map)
+    return map
   }
 
   // ===== TEAM MANAGEMENT =====
@@ -73,6 +313,9 @@ export class AgentTeamsBackend {
     const config = { members: [] }
     writeFileSync(join(teamDir, 'config.json'), JSON.stringify(config, null, 2))
 
+    // Start Docker container for this team if enabled
+    this.ensureContainer(teamName)
+
     return { name: teamName, path: teamDir }
   }
 
@@ -80,13 +323,16 @@ export class AgentTeamsBackend {
     const teamDir = join(this.teamsRoot, teamName)
     const taskDir = join(this.tasksRoot, teamName)
 
-    // Stop all sessions for this team
+    // Kill all tmux sessions for this team
     try {
       const members = this.getTeammates(teamName)
       for (const m of members) {
         this.stopTeammate(teamName, m.name)
       }
     } catch { /* ignore cleanup errors */ }
+
+    // Stop and remove Docker container for this team
+    this.stopContainer(teamName)
 
     if (existsSync(teamDir)) rmSync(teamDir, { recursive: true })
     if (existsSync(taskDir)) rmSync(taskDir, { recursive: true })
@@ -99,11 +345,14 @@ export class AgentTeamsBackend {
     if (!config?.members) return []
 
     const tasks = this.getTasksForTeam(teamName)
+    const sessionMap = this._getSessionMap(teamName)
+    const liveSessions = this.listTmuxSessions(teamName)
 
     return config.members.map(member => {
-      const alive = this.isTeammateAlive(teamName, member.name)
-      const memberTasks = tasks.filter(t => t.owner === member.name)
-      const inProgressTask = memberTasks.find(t => t.status === 'in_progress')
+      const sInfo = sessionMap[member.name] || {}
+      const tmuxName = sInfo.tmuxSession || this._tmuxName(teamName, member.name)
+      const alive = liveSessions.includes(tmuxName)
+      const inProgressTask = tasks.find(t => t.owner === member.name && t.status === 'in_progress')
 
       let status = 'idle'
       let issue = null
@@ -128,9 +377,6 @@ export class AgentTeamsBackend {
         }
       }
 
-      // Get cost from session if available
-      const sessionCost = this.getSessionCost(teamName, member.name)
-
       return {
         name: member.name,
         rig: teamName,
@@ -140,8 +386,11 @@ export class AgentTeamsBackend {
         issue,
         assignedAt,
         sessionAlive: alive,
-        tokensUsed: sessionCost.inputTokens + sessionCost.outputTokens,
-        costUsd: sessionCost.costUsd,
+        tmuxSession: tmuxName,
+        claudeSessionId: sInfo.claudeSessionId || null,
+        resumable: !alive && !!sInfo.claudeSessionId,
+        tokensUsed: 0,
+        costUsd: 0,
         progress: 0
       }
     })
@@ -154,17 +403,12 @@ export class AgentTeamsBackend {
       this.createTeam(teamName)
     }
 
-    const key = this._sessionKey(teamName, name)
+    const tmuxName = this._tmuxName(teamName, name)
 
-    // Clean up existing session if any
-    if (this.sessions.has(key)) {
-      this._cleanupSession(key)
+    // Kill existing tmux session if any
+    if (this.isTmuxSessionAlive(tmuxName, { teamName })) {
+      this.killTmuxSession(tmuxName, { teamName })
     }
-
-    // Create session state (workers use CLI, deferred process start)
-    const session = this._createSessionState('cli')
-    if (cwd) session.cwd = cwd
-    this.sessions.set(key, session)
 
     // Register in team config
     const config = this.getTeamConfig(teamName) || { members: [] }
@@ -177,41 +421,27 @@ export class AgentTeamsBackend {
       writeFileSync(join(teamDir, 'config.json'), JSON.stringify(config, null, 2))
     }
 
-    return { name, sessionKey: key }
+    // Record in session map
+    const map = this._getSessionMap(teamName)
+    map[name] = {
+      tmuxSession: tmuxName,
+      claudeSessionId: map[name]?.claudeSessionId || null,
+      startedAt: new Date().toISOString(),
+      alive: false  // Not yet spawned a tmux session — will be set true when work starts
+    }
+    this._saveSessionMap(teamName, map)
+
+    return { name, tmuxSession: tmuxName }
   }
 
   stopTeammate(teamName, name) {
-    const key = this._sessionKey(teamName, name)
-    return this._cleanupSession(key)
-  }
-
-  _cleanupSession(key) {
-    const session = this.sessions.get(key)
-    if (!session) return false
-
-    try {
-      if (session.process) {
-        session.process.kill('SIGTERM')
-      }
-      session.abortController.abort()
-    } catch { /* ignore */ }
-
-    session.status = 'idle'
-    session.streamListeners.clear()
-    return true
+    const tmuxName = this._tmuxName(teamName, name)
+    return this.killTmuxSession(tmuxName, { teamName })
   }
 
   isTeammateAlive(teamName, name) {
-    const key = this._sessionKey(teamName, name)
-    const session = this.sessions.get(key)
-    if (!session) return false
-
-    if (session.process) {
-      return session.process.exitCode === null && !session.process.killed
-    }
-
-    // Session registered but no process yet (deferred start)
-    return session.status === 'idle'
+    const tmuxName = this._tmuxName(teamName, name)
+    return this.isTmuxSessionAlive(tmuxName, { teamName })
   }
 
   // Remove teammate from team config (does not kill session)
@@ -225,9 +455,9 @@ export class AgentTeamsBackend {
     writeFileSync(configPath, JSON.stringify(config, null, 2))
   }
 
-  // Fully dismiss a teammate: stop session, fail tasks, remove from config
+  // Fully dismiss a teammate: kill tmux, fail tasks, remove from config + session map
   dismissTeammate(teamName, name) {
-    // Stop the session
+    // Kill tmux session
     this.stopTeammate(teamName, name)
 
     // Mark any in_progress tasks as failed
@@ -242,9 +472,10 @@ export class AgentTeamsBackend {
       }
     }
 
-    // Remove session from registry
-    const key = this._sessionKey(teamName, name)
-    this.sessions.delete(key)
+    // Remove from session map
+    const sessionMap = this._getSessionMap(teamName)
+    delete sessionMap[name]
+    this._saveSessionMap(teamName, sessionMap)
 
     // Remove from team config
     this.removeTeammate(teamName, name)
@@ -388,210 +619,41 @@ export class AgentTeamsBackend {
     return tasks.find(t => t.owner === memberName && t.status === 'in_progress') || null
   }
 
-  // ===== SESSION I/O =====
+  // ===== SESSION I/O (tmux-based) =====
 
   sendToSession(teamName, name, msg) {
-    const key = this._sessionKey(teamName, name)
-    let session = this.sessions.get(key)
+    const tmuxName = this._tmuxName(teamName, name)
 
-    if (!session) {
-      // Auto-create session if not registered
-      this.spawnTeammate(teamName, name)
-      session = this.sessions.get(key)
-    }
+    // If no tmux session exists, spawn one with this message as the initial prompt
+    if (!this.isTmuxSessionAlive(tmuxName, { teamName })) {
+      // Check session map for resumable session
+      const sessionMap = this._getSessionMap(teamName)
+      const sInfo = sessionMap[name] || {}
 
-    return this._sendToCLISession(key, session, msg)
-  }
-
-  _sendToCLISession(key, session, msg) {
-    // If an existing process is still running, kill it first
-    if (session.process && session.process.exitCode === null) {
-      session.process.kill('SIGTERM')
-    }
-
-    const args = ['-p', msg, '--output-format', 'stream-json', '--verbose', '--dangerously-skip-permissions']
-
-    // Resume if we have a prior session ID
-    if (session.sessionId) {
-      args.push('--resume', session.sessionId)
-    }
-
-    if (session.cwd) {
-      args.push('--add-dir', session.cwd)
-    }
-
-    try {
-      const proc = spawn(this.claudePath, args, {
-        stdio: ['ignore', 'pipe', 'pipe'],
-        env: { ...process.env }
+      this.spawnTmuxSession(tmuxName, msg, {
+        teamName,
+        resumeSessionId: sInfo.claudeSessionId || null
       })
 
-      session.process = proc
-      session.status = 'running'
-      session.lastActivity = Date.now()
-      console.log(`[${key}] Spawned claude process (PID ${proc.pid})`)
-
-      // Parse NDJSON from stdout
-      this._processCliStream(key, session, proc)
-
-      proc.on('exit', (code) => {
-        session.status = code === 0 ? 'idle' : 'error'
-        session.lastActivity = Date.now()
-        if (code !== 0) {
-          console.error(`[${key}] claude process exited with code ${code}`)
-        } else {
-          console.log(`[${key}] claude process completed successfully`)
-        }
-        // Notify listeners of completion
-        this._notifyListeners(key, { type: 'session_end', code })
-      })
-
-      proc.on('error', (err) => {
-        session.status = 'error'
-        session.messages.push({ type: 'error', text: err.message, ts: Date.now() })
-        this._notifyListeners(key, { type: 'error', text: err.message })
-      })
-
-      return true
-    } catch (e) {
-      session.status = 'error'
-      return false
-    }
-  }
-
-  _processCliStream(key, session, proc) {
-    const rl = createInterface({ input: proc.stdout })
-
-    rl.on('line', (line) => {
-      try {
-        const msg = JSON.parse(line)
-        session.lastActivity = Date.now()
-
-        // Extract session ID from init message
-        if (msg.type === 'system' && msg.subtype === 'init') {
-          session.sessionId = msg.session_id
-        }
-
-        // Accumulate text from assistant messages
-        if (msg.type === 'assistant' && msg.message?.content) {
-          for (const block of msg.message.content) {
-            if (block.type === 'text') {
-              this._addMessage(session, { type: 'text', text: block.text, ts: Date.now() })
-              this._notifyListeners(key, { type: 'text_delta', text: block.text })
-            }
-          }
-        }
-
-        // Streaming partial text
-        if (msg.type === 'stream_event' && msg.event?.delta?.type === 'text_delta') {
-          const text = msg.event.delta.text
-          this._addMessage(session, { type: 'text_delta', text, ts: Date.now() })
-          this._notifyListeners(key, { type: 'text_delta', text })
-        }
-
-        // Tool progress
-        if (msg.type === 'tool_progress') {
-          this._notifyListeners(key, {
-            type: 'tool_progress',
-            tool: msg.tool_name,
-            elapsed: msg.elapsed_time_seconds
-          })
-        }
-
-        // Result with cost
-        if (msg.type === 'result') {
-          if (msg.total_cost_usd !== undefined) {
-            session.costUsd = msg.total_cost_usd
-          }
-          if (msg.usage) {
-            session.inputTokens = msg.usage.input_tokens || 0
-            session.outputTokens = msg.usage.output_tokens || 0
-          }
-          const resultText = msg.result || ''
-          this._addMessage(session, { type: 'result', text: resultText, ts: Date.now() })
-          this._notifyListeners(key, {
-            type: 'result',
-            text: resultText,
-            cost: { costUsd: session.costUsd, inputTokens: session.inputTokens, outputTokens: session.outputTokens }
-          })
-        }
-      } catch {
-        // Non-JSON line, ignore
+      // Update session map
+      sessionMap[name] = {
+        ...sInfo,
+        tmuxSession: tmuxName,
+        startedAt: new Date().toISOString(),
+        alive: true
       }
-    })
-
-    // Also capture stderr for diagnostics
-    if (proc.stderr) {
-      const errRl = createInterface({ input: proc.stderr })
-      errRl.on('line', (line) => {
-        console.error(`[${key}] stderr: ${line}`)
-        this._addMessage(session, { type: 'stderr', text: line, ts: Date.now() })
-      })
+      this._saveSessionMap(teamName, sessionMap)
+      return true
     }
-  }
 
-  _addMessage(session, msg) {
-    session.messages.push(msg)
-    if (session.messages.length > 500) {
-      session.messages = session.messages.slice(-400)
-    }
-  }
-
-  _notifyListeners(key, event) {
-    const session = this.sessions.get(key)
-    if (!session) return
-    for (const listener of session.streamListeners) {
-      try {
-        listener(event)
-      } catch { /* ignore listener errors */ }
-    }
+    // Session already running — type the message into it
+    this.sendToTmuxSession(tmuxName, msg, { teamName })
+    return true
   }
 
   captureOutput(teamName, name, lines = 200) {
-    const key = this._sessionKey(teamName, name)
-    const session = this.sessions.get(key)
-    if (!session) return null
-
-    // Build text from stored messages
-    const output = session.messages
-      .slice(-lines)
-      .map(m => {
-        if (m.type === 'text' || m.type === 'text_delta' || m.type === 'result') return m.text
-        if (m.type === 'stderr') return `[stderr] ${m.text}`
-        if (m.type === 'error') return `[error] ${m.text}`
-        return null
-      })
-      .filter(Boolean)
-      .join('')
-
-    return output || null
-  }
-
-  // ===== STREAM SUBSCRIPTIONS =====
-
-  subscribeToStream(teamName, name, listener) {
-    const key = this._sessionKey(teamName, name)
-    const session = this.sessions.get(key)
-    if (!session) return () => {}
-
-    session.streamListeners.add(listener)
-
-    // Return unsubscribe function
-    return () => {
-      session.streamListeners.delete(listener)
-    }
-  }
-
-  getSessionCost(teamName, name) {
-    const key = this._sessionKey(teamName, name)
-    const session = this.sessions.get(key)
-    if (!session) return { costUsd: 0, inputTokens: 0, outputTokens: 0 }
-
-    return {
-      costUsd: session.costUsd,
-      inputTokens: session.inputTokens,
-      outputTokens: session.outputTokens
-    }
+    const tmuxName = this._tmuxName(teamName, name)
+    return this.captureTmuxOutput(tmuxName, lines, { teamName })
   }
 
   // ===== STUCK DETECTION =====
@@ -626,33 +688,84 @@ export class AgentTeamsBackend {
 
   // ===== EMPEROR (formerly Mayor / Team Lead) =====
 
-  async startEmperor(teamName, cwd = null) {
-    const key = this._sessionKey(teamName, 'emperor')
+  startEmperor(teamName, cwd = null) {
+    const tmuxName = this._tmuxName(teamName, 'emperor')
 
-    // Clean up existing session
-    if (this.sessions.has(key)) {
-      this._cleanupSession(key)
+    if (this.isTmuxSessionAlive(tmuxName, { teamName })) {
+      return true  // Already running
     }
 
-    const type = 'cli'
-    const session = this._createSessionState(type)
-    if (cwd) session.cwd = cwd
-    this.sessions.set(key, session)
+    // Check for resumable session
+    const sessionMap = this._getSessionMap(teamName)
+    const sInfo = sessionMap.emperor || {}
+
+    // Build the claude command with all features enabled
+    let claudeCmd = this.claudePath + ' --dangerously-skip-permissions --verbose'
+    if (sInfo.claudeSessionId) {
+      claudeCmd += ` --resume ${sInfo.claudeSessionId}`
+    }
+
+    const envPrefix = 'CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1'
+    const fullCmd = `${envPrefix} ${claudeCmd}`
+    const safeSession = tmuxName.replace(/'/g, "'\\''")
+    const safeCmd = fullCmd.replace(/'/g, "'\\''")
+    const tmuxCmds = [
+      `tmux new-session -d -s '${safeSession}' '${safeCmd}'`,
+      `tmux set-option -t '${safeSession}' remain-on-exit off`,
+      `tmux set-option -t '${safeSession}' destroy-unattached off`
+    ].join(' && ')
+
+    if (this.dockerEnabled) {
+      this.ensureContainer(teamName)
+      this._exec(teamName, tmuxCmds)
+    } else {
+      execSync(tmuxCmds)
+    }
+    console.log(`[tmux] Started Emperor session: ${tmuxName}`)
+
+    // Record in session map
+    sessionMap.emperor = {
+      ...sInfo,
+      tmuxSession: tmuxName,
+      startedAt: new Date().toISOString(),
+      alive: true
+    }
+    this._saveSessionMap(teamName, sessionMap)
+
+    // Register emperor in team config if not present
+    const config = this.getTeamConfig(teamName) || { members: [] }
+    if (!config.members.find(m => m.name === 'emperor')) {
+      config.members.push({
+        name: 'emperor',
+        agentId: `${teamName}-emperor-${Date.now()}`,
+        agentType: 'emperor'
+      })
+      const teamDir = join(this.teamsRoot, teamName)
+      writeFileSync(join(teamDir, 'config.json'), JSON.stringify(config, null, 2))
+    }
 
     return true
   }
 
   sendToEmperor(teamName, msg, emperorName = 'Tiberius Claudius') {
-    const key = this._sessionKey(teamName, 'emperor')
-    const session = this.sessions.get(key)
+    const tmuxName = this._tmuxName(teamName, 'emperor')
 
-    // Prepend context on first message (no prior session)
-    if (session && !session.sessionId) {
+    if (!this.isTmuxSessionAlive(tmuxName, { teamName })) {
+      return false
+    }
+
+    // Check if this is the first message (no claudeSessionId yet means fresh session)
+    const sessionMap = this._getSessionMap(teamName)
+    const sInfo = sessionMap.emperor || {}
+    const isFirstMessage = !sInfo.claudeSessionId && !sInfo.firstMessageSent
+
+    if (isFirstMessage) {
+      // First message includes context
       const teams = this.listTeams()
       const teamSummary = teams.map(t => {
-        const config = this.getTeamConfig(t)
+        const config = this.getTeamConfig(t.name)
         const members = config?.members?.map(m => m.name).join(', ') || 'none'
-        return `  - ${t}: members=[${members}]`
+        return `  - ${t.name}: members=[${members}]`
       }).join('\n')
 
       const context = [
@@ -677,10 +790,17 @@ export class AgentTeamsBackend {
         msg
       ].join('\n')
 
-      return this.sendToSession(teamName, 'emperor', context)
+      this.sendToTmuxSession(tmuxName, context, { teamName })
+
+      // Mark first message sent
+      sInfo.firstMessageSent = true
+      sessionMap.emperor = sInfo
+      this._saveSessionMap(teamName, sessionMap)
+    } else {
+      this.sendToTmuxSession(tmuxName, msg, { teamName })
     }
 
-    return this.sendToSession(teamName, 'emperor', msg)
+    return true
   }
 
   captureEmperor(teamName, lines = 200) {
@@ -689,6 +809,28 @@ export class AgentTeamsBackend {
 
   isEmperorAlive(teamName) {
     return this.isTeammateAlive(teamName, 'emperor')
+  }
+
+  // Resume a dead session using its saved Claude session ID
+  resumeSession(teamName, name) {
+    const sessionMap = this._getSessionMap(teamName)
+    const sInfo = sessionMap[name]
+    if (!sInfo?.claudeSessionId) return false
+
+    const tmuxName = sInfo.tmuxSession || this._tmuxName(teamName, name)
+
+    // Kill existing if somehow alive
+    if (this.isTmuxSessionAlive(tmuxName, { teamName })) {
+      this.killTmuxSession(tmuxName, { teamName })
+    }
+
+    this.spawnTmuxSession(tmuxName, null, { teamName, resumeSessionId: sInfo.claudeSessionId })
+
+    sInfo.alive = true
+    sInfo.tmuxSession = tmuxName
+    sInfo.startedAt = new Date().toISOString()
+    this._saveSessionMap(teamName, sessionMap)
+    return true
   }
 
   // Backward compat aliases

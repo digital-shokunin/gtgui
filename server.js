@@ -4,6 +4,7 @@ import { createServer } from 'http'
 import { fileURLToPath } from 'url'
 import { dirname, join } from 'path'
 import { writeFileSync, readFileSync, mkdirSync, existsSync } from 'fs'
+import { spawn } from 'child_process'
 import { setupAuth, getSessionMiddleware, requireAuth } from './src/server/auth.js'
 import { MultiplayerServer } from './src/server/multiplayer.js'
 import { AgentTeamsBackend } from './src/server/backend.js'
@@ -43,12 +44,6 @@ const multiplayer = new MultiplayerServer(httpServer, sessionMiddleware)
 const GTGUI_DATA = process.env.GTGUI_DATA || join(process.env.HOME, '.gtgui')
 mkdirSync(GTGUI_DATA, { recursive: true })
 
-const backend = new AgentTeamsBackend({
-  claudePath: process.env.CLAUDE_PATH || 'claude',
-  teamsRoot: process.env.TEAMS_ROOT,
-  tasksRoot: process.env.TASKS_ROOT,
-})
-
 // Settings storage
 const SETTINGS_FILE = join(GTGUI_DATA, 'settings.json')
 const DEFAULT_SETTINGS = {
@@ -59,7 +54,12 @@ const DEFAULT_SETTINGS = {
   enableSounds: true,
   enableNotifications: true,
   tokenCostRate: 0.003,
-  emperorName: 'Tiberius Claudius'  // Default Emperor name — user can change
+  emperorName: 'Tiberius Claudius',  // Default Emperor name — user can change
+  dockerEnabled: false,              // Toggle Docker sandboxing per team
+  dockerImage: 'colony-sandbox',     // Docker image for agent containers
+  containerMemory: '4g',             // Memory limit per container
+  containerCpus: '2',                // CPU limit per container
+  networkIsolation: false            // If true, containers have no network access
 }
 
 // ===== ACTIVITY FEED =====
@@ -206,8 +206,44 @@ function saveSettings(settings) {
 
 let currentSettings = loadSettings()
 
-// ===== STUCK DETECTION (replaces pollWitnessAlerts) =====
-const alertedStuckAgents = new Set()  // dedup: only alert once per stuck agent
+const backend = new AgentTeamsBackend({
+  claudePath: process.env.CLAUDE_PATH || 'claude',
+  teamsRoot: process.env.TEAMS_ROOT,
+  tasksRoot: process.env.TASKS_ROOT,
+  dockerEnabled: currentSettings.dockerEnabled || false,
+  dockerImage: currentSettings.dockerImage || 'colony-sandbox',
+  containerMemory: currentSettings.containerMemory || '4g',
+  containerCpus: currentSettings.containerCpus || '2',
+  networkIsolation: currentSettings.networkIsolation || false,
+})
+
+// ===== STARTUP: Reassociate tmux sessions + detect zombies =====
+console.log('[startup] Reassociating tmux sessions...')
+for (const team of backend.listTeams()) {
+  const sessionMap = backend.reassociateSessions(team.name)
+
+  // Reset tasks whose session is dead
+  const tasks = backend.getTasksForTeam(team.name)
+  for (const task of tasks) {
+    if (task.status === 'in_progress' && task.owner) {
+      const sInfo = sessionMap[task.owner]
+      const alive = sInfo?.alive
+      if (!alive) {
+        backend.updateTask(team.name, task.id, {
+          status: 'pending',
+          owner: null,
+          interruptReason: 'session_dead',
+          previousOwner: task.owner,
+          resumableSessionId: sInfo?.claudeSessionId || null
+        })
+        console.log(`[startup] Reset task "${task.subject}" (owner ${task.owner} session dead)`)
+      }
+    }
+  }
+}
+
+// ===== STUCK DETECTION =====
+const alertedStuckAgents = new Set()
 
 function checkStuckTeammates() {
   const alerts = backend.checkStuck(currentSettings)
@@ -217,7 +253,6 @@ function checkStuckTeammates() {
     const key = `${alert.rig}/${alert.agent}`
     currentStuck.add(key)
 
-    // Only alert once per stuck agent
     if (alertedStuckAgents.has(key)) continue
     alertedStuckAgents.add(key)
 
@@ -237,26 +272,12 @@ function checkStuckTeammates() {
     })
   }
 
-  // Clear agents that are no longer stuck (so they can re-alert if stuck again)
   for (const key of alertedStuckAgents) {
     if (!currentStuck.has(key)) alertedStuckAgents.delete(key)
   }
 }
 
 setInterval(checkStuckTeammates, 30000)
-
-// ===== COST SYNC: Periodically read session costs from backend =====
-setInterval(() => {
-  for (const team of backend.listTeams()) {
-    const teammates = backend.getTeammates(team.name)
-    for (const t of teammates) {
-      const cost = backend.getSessionCost(team.name, t.name)
-      if (cost.inputTokens > 0 || cost.outputTokens > 0) {
-        recordTokenUsage(t.name, team.name, cost.inputTokens + cost.outputTokens)
-      }
-    }
-  }
-}, 60000)
 
 // ===== HELPER: Parse agent ID =====
 // New format: "teamName/memberName" (no more /polecats/)
@@ -575,7 +596,7 @@ app.post('/api/agents/:id/dismiss', (req, res) => {
 
   const success = backend.dismissTeammate(teamName, memberName)
 
-  // Clear from stuck alert dedup
+  // Clear from stuck alert dedup set
   alertedStuckAgents.delete(`${teamName}/${memberName}`)
 
   addActivityEvent('agent_dismissed', {
@@ -601,19 +622,20 @@ app.get('/api/agents/:id/hook', (req, res) => {
       ? Date.now() - currentTask.fileModifiedAt
       : 0
     const alive = backend.isTeammateAlive(teamName, memberName)
-    const cost = backend.getSessionCost(teamName, memberName)
 
     res.json({
       hook: currentTask.subject,
       status: (!alive && currentTask.status === 'in_progress') ? 'stuck' : currentTask.status === 'in_progress' ? 'working' : currentTask.status,
       assignedAt: currentTask.createdAt,
       progress: 0,
-      tokensUsed: cost.inputTokens + cost.outputTokens,
-      costUsd: cost.costUsd,
+      tokensUsed: 0,
+      costUsd: 0,
       stuckReason: !alive ? 'session_dead' : null,
       stuckAt: null,
       completedTask: null,
-      completedAt: null
+      completedAt: null,
+      sessionAlive: alive,
+      resumable: !alive
     })
   } else {
     // Check for most recently completed task
@@ -649,21 +671,20 @@ app.get('/api/agents/:id/logs', (req, res) => {
   const captured = backend.captureOutput(teamName, memberName, lines)
   const sessionActive = backend.isTeammateAlive(teamName, memberName)
   const currentTask = backend.getTeammateCurrentTask(teamName, memberName)
-  const cost = backend.getSessionCost(teamName, memberName)
 
   res.json({
     logs: captured || '(No session output available)',
     sessionActive,
     status: currentTask ? 'working' : 'idle',
     task: currentTask?.subject || null,
-    tokensUsed: cost.inputTokens + cost.outputTokens,
-    costUsd: cost.costUsd,
+    tokensUsed: 0,
+    costUsd: 0,
     rig: teamName,
     polecat: memberName
   })
 })
 
-// GET /api/agents/:id/logs/stream - SSE stream of live session output
+// GET /api/agents/:id/logs/stream - SSE stream of live session output (tmux polling)
 app.get('/api/agents/:id/logs/stream', (req, res) => {
   const { teamName, memberName } = parseAgentId(req.params.id)
 
@@ -676,22 +697,68 @@ app.get('/api/agents/:id/logs/stream', (req, res) => {
   res.setHeader('Cache-Control', 'no-cache')
   res.setHeader('Connection', 'keep-alive')
 
-  // Send initial accumulated output
+  // Send initial captured output
   const initial = backend.captureOutput(teamName, memberName, 200)
   if (initial) {
     res.write(`data: ${JSON.stringify({ type: 'initial', logs: initial, sessionActive: true })}\n\n`)
   }
 
-  // Subscribe to live stream events
-  const unsubscribe = backend.subscribeToStream(teamName, memberName, (event) => {
+  // Poll tmux capture-pane every 2 seconds, send diffs as SSE events
+  let lastOutput = initial || ''
+  const interval = setInterval(() => {
     try {
-      res.write(`data: ${JSON.stringify(event)}\n\n`)
-    } catch { /* client disconnected */ }
-  })
+      const current = backend.captureOutput(teamName, memberName) || ''
+      if (current !== lastOutput) {
+        const newContent = current.length > lastOutput.length ? current.slice(lastOutput.length) : current
+        res.write(`data: ${JSON.stringify({ type: 'text_delta', text: newContent })}\n\n`)
+        lastOutput = current
+      }
+    } catch { /* ignore errors during polling */ }
+  }, 2000)
 
   req.on('close', () => {
-    unsubscribe()
+    clearInterval(interval)
   })
+})
+
+// POST /api/agents/:id/message - Send follow-up message to agent's tmux session
+app.post('/api/agents/:id/message', (req, res) => {
+  const { teamName, memberName } = parseAgentId(req.params.id)
+  const { message } = req.body
+
+  if (!teamName) {
+    return res.status(404).json({ error: 'Agent not found' })
+  }
+  if (!message) {
+    return res.status(400).json({ error: 'Message required' })
+  }
+
+  const sessionMap = backend._getSessionMap(teamName)
+  const tmuxName = sessionMap[memberName]?.tmuxSession || backend._tmuxName(teamName, memberName)
+
+  if (!backend.isTmuxSessionAlive(tmuxName, { teamName })) {
+    return res.status(400).json({ error: 'Agent session not running' })
+  }
+
+  backend.sendToTmuxSession(tmuxName, message, { teamName })
+  res.json({ success: true })
+})
+
+// POST /api/agents/:id/resume - Resume a dead session using saved Claude session ID
+app.post('/api/agents/:id/resume', (req, res) => {
+  const { teamName, memberName } = parseAgentId(req.params.id)
+
+  if (!teamName) {
+    return res.status(404).json({ error: 'Agent not found' })
+  }
+
+  const success = backend.resumeSession(teamName, memberName)
+  if (success) {
+    addActivityEvent('agent_resumed', { agent: memberName, rig: teamName }, req.session?.passport?.user)
+    res.json({ success: true, message: `Resumed session for ${memberName}` })
+  } else {
+    res.status(400).json({ error: 'No resumable session found' })
+  }
 })
 
 // POST /api/agents/:id/simulate-stuck - Simulate stuck (dev/test only)
@@ -760,6 +827,12 @@ app.post('/api/settings', (req, res) => {
 
   if (saveSettings(newSettings)) {
     currentSettings = newSettings
+    // Propagate Docker settings changes to backend
+    backend.dockerEnabled = currentSettings.dockerEnabled || false
+    backend.dockerImage = currentSettings.dockerImage || 'colony-sandbox'
+    backend.containerMemory = currentSettings.containerMemory || '4g'
+    backend.containerCpus = currentSettings.containerCpus || '2'
+    backend.networkIsolation = currentSettings.networkIsolation || false
     multiplayer.broadcastStateUpdate({ event: 'settings:updated', settings: currentSettings })
     res.json({ success: true, settings: currentSettings })
   } else {
@@ -1431,7 +1504,7 @@ app.post('/api/teams/:name/tasks', (req, res) => {
 
 // ===== EMPEROR (formerly Mayor / Team Lead) =====
 
-app.post('/api/emperor/start', async (req, res) => {
+app.post('/api/emperor/start', (req, res) => {
   // Check which team to start emperor for
   const teams = backend.listTeams()
   const teamName = req.body?.team || (teams.length > 0 ? teams[0].name : null)
@@ -1448,10 +1521,11 @@ app.post('/api/emperor/start', async (req, res) => {
   }
 
   try {
-    await backend.startEmperor(resolvedTeam)
+    backend.startEmperor(resolvedTeam)
     addActivityEvent('emperor_started', {}, req.session?.passport?.user)
     res.json({ success: true })
   } catch (e) {
+    console.error('Failed to start Emperor:', e.message)
     res.status(500).json({ error: 'Failed to start Emperor session' })
   }
 })
@@ -1509,21 +1583,27 @@ app.get('/api/emperor/stream', (req, res) => {
     return
   }
 
-  // Send initial accumulated output
+  // Send initial captured output
   const initial = backend.captureEmperor(teamName)
   if (initial) {
     res.write(`data: ${JSON.stringify({ type: 'initial', content: initial })}\n\n`)
   }
 
-  // Subscribe to live stream events
-  const unsubscribe = backend.subscribeToStream(teamName, 'emperor', (event) => {
+  // Poll tmux capture-pane every 2 seconds
+  let lastOutput = initial || ''
+  const interval = setInterval(() => {
     try {
-      res.write(`data: ${JSON.stringify(event)}\n\n`)
-    } catch { /* client disconnected */ }
-  })
+      const current = backend.captureEmperor(teamName) || ''
+      if (current !== lastOutput) {
+        const newContent = current.length > lastOutput.length ? current.slice(lastOutput.length) : current
+        res.write(`data: ${JSON.stringify({ type: 'text_delta', text: newContent })}\n\n`)
+        lastOutput = current
+      }
+    } catch { /* ignore */ }
+  }, 2000)
 
   req.on('close', () => {
-    unsubscribe()
+    clearInterval(interval)
   })
 })
 
@@ -1547,13 +1627,131 @@ app.use((err, req, res, next) => {
   res.status(500).json({ error: err.message })
 })
 
+// ===== TERMINAL WebSocket: tmux attach bridge via socket.io =====
+const terminalNs = multiplayer.io.of('/terminal')
+
+terminalNs.use((socket, next) => {
+  // Reuse session middleware for auth
+  const req = socket.request
+  sessionMiddleware(req, {}, () => {
+    if (req.session?.passport?.user || process.env.NODE_ENV !== 'production') {
+      next()
+    } else {
+      next(new Error('Authentication required'))
+    }
+  })
+})
+
+terminalNs.on('connection', (socket) => {
+  console.log(`[terminal] Client connected: ${socket.id}`)
+  let tmuxProc = null
+
+  socket.on('attach', (data) => {
+    const { sessionName } = data
+    if (!sessionName || !/^colony_/.test(sessionName)) {
+      socket.emit('error', { message: 'Invalid session name' })
+      return
+    }
+
+    // Parse teamName from session name for Docker routing
+    const teamName = backend._teamFromTmuxName(sessionName)
+
+    // Check session exists
+    if (!backend.isTmuxSessionAlive(sessionName, { teamName })) {
+      socket.emit('error', { message: 'Session not found or not running' })
+      return
+    }
+
+    // Kill any existing attach process
+    if (tmuxProc) {
+      try { tmuxProc.kill() } catch { /* ignore */ }
+    }
+
+    const cols = data.cols || 120
+    const rows = data.rows || 40
+    const safeSession = sessionName.replace(/'/g, "'\\''")
+
+    let proc
+    if (backend.dockerEnabled && teamName) {
+      // Docker mode: attach to tmux inside container via docker exec -it
+      const container = backend._containerName(teamName)
+      proc = spawn('docker', [
+        'exec', '-it',
+        '-e', `TERM=xterm-256color`,
+        '-e', `COLUMNS=${cols}`,
+        '-e', `LINES=${rows}`,
+        container,
+        'tmux', 'attach-session', '-t', sessionName
+      ], {
+        env: { ...process.env }
+      })
+    } else {
+      // Host mode: use script(1) to force TTY allocation for tmux
+      const platform = process.platform
+      if (platform === 'darwin') {
+        proc = spawn('script', ['-q', '/dev/null', 'tmux', 'attach-session', '-t', sessionName], {
+          env: { ...process.env, TERM: 'xterm-256color', COLUMNS: String(cols), LINES: String(rows) }
+        })
+      } else {
+        proc = spawn('script', ['-qc', `tmux attach-session -t '${safeSession}'`, '/dev/null'], {
+          env: { ...process.env, TERM: 'xterm-256color', COLUMNS: String(cols), LINES: String(rows) }
+        })
+      }
+    }
+
+    tmuxProc = proc
+    console.log(`[terminal] Attached to ${sessionName} (PID ${proc.pid})${backend.dockerEnabled ? ' [docker]' : ''}`)
+
+    proc.stdout.on('data', (data) => {
+      socket.emit('output', data.toString('binary'))
+    })
+
+    proc.stderr.on('data', (data) => {
+      socket.emit('output', data.toString('binary'))
+    })
+
+    proc.on('exit', (code) => {
+      console.log(`[terminal] tmux attach exited (code ${code})`)
+      socket.emit('exit', { code })
+      tmuxProc = null
+    })
+
+    socket.emit('attached', { sessionName })
+  })
+
+  socket.on('input', (data) => {
+    if (tmuxProc && tmuxProc.stdin.writable) {
+      tmuxProc.stdin.write(data)
+    }
+  })
+
+  socket.on('resize', (data) => {
+    // Resize the tmux pane
+    if (data.cols && data.rows) {
+      try {
+        // This resizes the current tmux client
+        // Since we're attached, it should respect window size
+      } catch { /* ignore */ }
+    }
+  })
+
+  socket.on('disconnect', () => {
+    console.log(`[terminal] Client disconnected: ${socket.id}`)
+    if (tmuxProc) {
+      // Detach cleanly — send tmux detach key (Ctrl-B d by default, but we just kill)
+      try { tmuxProc.kill() } catch { /* ignore */ }
+      tmuxProc = null
+    }
+  })
+})
+
 const PORT = process.env.PORT || 8080
 httpServer.listen(PORT, () => {
   console.log(`GTGUI server running at http://localhost:${PORT}`)
   console.log(`Data directory: ${GTGUI_DATA}`)
   console.log(`Teams root: ${backend.teamsRoot}`)
   console.log(`Tasks root: ${backend.tasksRoot}`)
-  console.log(`WebSocket enabled for multiplayer`)
+  console.log(`WebSocket enabled for multiplayer + terminal`)
   if (!process.env.GITHUB_CLIENT_ID) {
     console.log(`GitHub OAuth: Not configured (dev mode enabled)`)
   } else {
