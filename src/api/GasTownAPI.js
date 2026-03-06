@@ -5,6 +5,7 @@ export class GasTownAPI {
 
   async request(endpoint, options = {}) {
     const response = await fetch(`${this.baseUrl}${endpoint}`, {
+      credentials: 'same-origin',
       headers: {
         'Content-Type': 'application/json',
         ...options.headers
@@ -117,11 +118,9 @@ export class GasTownAPI {
     })
   }
 
-  // Simulate agent getting stuck (for testing)
-  async simulateStuck(agentId) {
-    return this.request(`/agents/${encodeURIComponent(agentId)}/simulate-stuck`, {
-      method: 'POST'
-    })
+  // Get Docker sandbox status
+  async getDockerStatus() {
+    return this.request('/docker/status')
   }
 
   // ===== ACTIVITY FEED =====
@@ -287,7 +286,7 @@ export class GasTownAPI {
   }
 
   openEmperorStream() {
-    return new EventSource(`${this.baseUrl}/emperor/stream`)
+    return new EventSource(`${this.baseUrl}/emperor/stream`, { withCredentials: true })
   }
 
   // ===== OPERATIONS DASHBOARD =====

@@ -65,6 +65,15 @@ export class UIScene extends Phaser.Scene {
     // Handle resize
     this.scale.on('resize', this.handleResize, this)
 
+    // Docker status cache + periodic refresh
+    this.dockerStatus = { enabled: false, containers: {} }
+    this.refreshDockerStatus()
+    this.time.addEvent({
+      delay: 15000,
+      callback: () => this.refreshDockerStatus(),
+      loop: true
+    })
+
     // Initialize notification sounds
     this.initNotificationSounds()
   }
@@ -285,6 +294,41 @@ export class UIScene extends Phaser.Scene {
     }
   }
 
+  // ===== DOCKER STATUS =====
+
+  async refreshDockerStatus() {
+    try {
+      this.dockerStatus = await this.api.getDockerStatus()
+      this.updateDockerIndicator()
+      this.updateColonyNavigator()
+    } catch { /* ignore */ }
+  }
+
+  updateDockerIndicator() {
+    // Remove previous indicator
+    if (this.dockerIndicator) {
+      this.dockerIndicator.destroy()
+      this.dockerIndicator = null
+    }
+
+    if (!this.dockerStatus?.enabled) return
+
+    const containers = this.dockerStatus.containers || {}
+    const total = Object.keys(containers).length
+    const running = Object.values(containers).filter(c => c.running).length
+
+    this.dockerIndicator = this.add.container(170, 33)
+
+    const text = this.add.text(0, 0, `🐳 ${running}/${total}`, {
+      font: 'bold 14px Fredoka',
+      fill: '#FFFFFF',
+      stroke: '#005588',
+      strokeThickness: 3
+    }).setOrigin(0, 0.5)
+
+    this.dockerIndicator.add(text)
+  }
+
   // ===== SETTINGS PANEL =====
 
   loadSettings() {
@@ -293,7 +337,12 @@ export class UIScene extends Phaser.Scene {
       stuckTimeThreshold: 1800000,  // 30 min
       enableSounds: true,
       enableNotifications: true,
-      emperorName: 'Tiberius Claudius'
+      emperorName: 'Tiberius Claudius',
+      dockerEnabled: false,
+      dockerImage: 'colony-sandbox',
+      containerMemory: '4g',
+      containerCpus: '2',
+      networkIsolation: false
     }
     try {
       const saved = localStorage.getItem('gtgui_settings')
@@ -301,10 +350,10 @@ export class UIScene extends Phaser.Scene {
     } catch (e) {
       this.settings = { ...defaults }
     }
-    // Sync emperorName from server if available
+    // Sync all settings from server
     this.api.getSettings().then(serverSettings => {
-      if (serverSettings.emperorName) {
-        this.settings.emperorName = serverSettings.emperorName
+      if (serverSettings) {
+        Object.assign(this.settings, serverSettings)
       }
     }).catch(() => {})
   }
@@ -369,7 +418,7 @@ export class UIScene extends Phaser.Scene {
     const width = this.cameras.main.width
     const height = this.cameras.main.height
     const panelWidth = 400
-    const panelHeight = 640
+    const panelHeight = 740
 
     this.settingsPanel = this.add.container(width/2, height/2)
     this.settingsPanel.setDepth(1500)
@@ -467,41 +516,75 @@ export class UIScene extends Phaser.Scene {
     this._emperorNameInput = nameInput
     yPos += 60
 
-    // Divider line
-    const divider = this.add.graphics()
-    divider.lineStyle(2, 0xE0E0E0, 1)
-    divider.lineBetween(-panelWidth/2 + 25, yPos, panelWidth/2 - 25, yPos)
-    this.settingsPanel.add(divider)
+    // ===== SANDBOX SECTION =====
+    const sandboxDivider = this.add.graphics()
+    sandboxDivider.lineStyle(2, 0xE0E0E0, 1)
+    sandboxDivider.lineBetween(-panelWidth/2 + 25, yPos, panelWidth/2 - 25, yPos)
+    this.settingsPanel.add(sandboxDivider)
     yPos += 20
 
-    // Debug section header
-    const debugHeader = this.add.text(0, yPos, '🦭 DEBUG TOOLS', {
+    const sandboxHeader = this.add.text(0, yPos, 'SANDBOX', {
       font: 'bold 14px Fredoka',
-      fill: '#E67E22'
+      fill: '#0077B6'
     }).setOrigin(0.5)
-    this.settingsPanel.add(debugHeader)
-    yPos += 35
+    this.settingsPanel.add(sandboxHeader)
+    yPos += 30
 
-    // Simulate Stuck button
-    const stuckBtn = this.add.graphics()
-    this.drawButton(stuckBtn, -150, yPos, 140, 40, 0xE67E22, true)
-    const stuckText = this.add.text(-80, yPos + 20, 'SEA LION', {
+    // Docker Sandbox toggle
+    this.addSettingToggle('Docker Sandbox', 'dockerEnabled', yPos)
+    yPos += 45
+
+    // Network Isolation toggle
+    this.addSettingToggle('Network Isolation', 'networkIsolation', yPos)
+    yPos += 50
+
+    // Memory pill selector
+    this.addSettingDropdown('Memory', 'containerMemory', ['1g', '2g', '4g', '8g'], yPos)
+    yPos += 45
+
+    // CPUs pill selector
+    this.addSettingDropdown('CPUs', 'containerCpus', ['1', '2', '4'], yPos)
+    yPos += 50
+
+    // Docker Image text field
+    const imgLabel = this.add.text(-panelWidth/2 + 25, yPos, 'Docker Image', {
       font: 'bold 14px Fredoka',
-      fill: '#FFFFFF'
-    }).setOrigin(0.5)
-    const stuckZone = this.add.zone(-80, yPos + 20, 140, 46)
-    stuckZone.setInteractive({ useHandCursor: true })
-    const doStuck = () => {
-      this._closeSettingsPanel()
-      this.showSimulateStuckPicker()
-    }
-    stuckZone.on('pointerup', doStuck)
-    stuckText.setInteractive({ useHandCursor: true })
-    stuckText.on('pointerup', doStuck)
-    this.settingsPanel.add([stuckBtn, stuckText, stuckZone])
+      fill: '#333333'
+    })
+    this.settingsPanel.add(imgLabel)
+
+    const imgInputId = 'docker-image-input'
+    let imgInput = document.getElementById(imgInputId)
+    if (imgInput) imgInput.remove()
+    imgInput = document.createElement('input')
+    imgInput.id = imgInputId
+    imgInput.type = 'text'
+    imgInput.value = this.settings.dockerImage || 'colony-sandbox'
+    imgInput.style.cssText = `
+      position: fixed;
+      left: ${width/2 - panelWidth/2 + 25}px;
+      top: ${height/2 + yPos + 20}px;
+      width: ${panelWidth - 50}px;
+      height: 32px;
+      font-family: 'Fredoka', sans-serif;
+      font-size: 14px;
+      padding: 4px 10px;
+      border: 2px solid #B0E0E6;
+      border-radius: 8px;
+      outline: none;
+      box-sizing: border-box;
+    `
+    imgInput.onfocus = () => { imgInput.style.borderColor = '#0077B6'; this.input.keyboard.enabled = false; this.input.keyboard.stopListeners() }
+    imgInput.onblur = () => { imgInput.style.borderColor = '#B0E0E6'; this.input.keyboard.enabled = true; this.input.keyboard.startListeners() }
+    imgInput.oninput = () => { this.settings.dockerImage = imgInput.value }
+    imgInput.addEventListener('keydown', e => e.stopPropagation())
+    imgInput.addEventListener('keyup', e => e.stopPropagation())
+    imgInput.addEventListener('keypress', e => e.stopPropagation())
+    document.body.appendChild(imgInput)
+    this._dockerImageInput = imgInput
+    yPos += 60
 
     // Save button
-    yPos += 60
     const saveBtn = this.add.graphics()
     this.drawButton(saveBtn, -80, yPos, 160, 44, 0x2ECC71, true)
     const saveText = this.add.text(0, yPos + 22, 'SAVE', {
@@ -537,6 +620,10 @@ export class UIScene extends Phaser.Scene {
     if (this._emperorNameInput) {
       this._emperorNameInput.remove()
       this._emperorNameInput = null
+    }
+    if (this._dockerImageInput) {
+      this._dockerImageInput.remove()
+      this._dockerImageInput = null
     }
     if (this.settingsPanel) {
       this.settingsPanel.destroy()
@@ -650,6 +737,57 @@ export class UIScene extends Phaser.Scene {
     this.settingsPanel.add([labelText, toggle, zone])
   }
 
+  addSettingDropdown(label, key, options, y) {
+    const x = -140
+
+    // Label
+    const labelText = this.add.text(x, y + 8, label, {
+      font: 'bold 14px Fredoka',
+      fill: '#333333'
+    })
+
+    // Pill buttons
+    const pillContainer = this.add.container(0, 0)
+    const pillWidth = 48
+    const pillHeight = 26
+    const pillGap = 6
+    const startX = 100 - (options.length * (pillWidth + pillGap)) / 2
+
+    const pills = []
+
+    const drawPills = () => {
+      pills.forEach(p => {
+        p.bg.clear()
+        const isActive = this.settings[key] === p.value
+        p.bg.fillStyle(isActive ? 0x0077B6 : 0xE0E0E0, 1)
+        p.bg.fillRoundedRect(p.px, y + 5, pillWidth, pillHeight, 13)
+        p.text.setStyle({ fill: isActive ? '#FFFFFF' : '#666666', font: 'bold 12px Fredoka' })
+      })
+    }
+
+    options.forEach((opt, i) => {
+      const px = startX + i * (pillWidth + pillGap)
+      const bg = this.add.graphics()
+      const text = this.add.text(px + pillWidth / 2, y + 5 + pillHeight / 2, opt, {
+        font: 'bold 12px Fredoka',
+        fill: '#666666'
+      }).setOrigin(0.5)
+
+      const zone = this.add.zone(px + pillWidth / 2, y + 5 + pillHeight / 2, pillWidth, pillHeight)
+      zone.setInteractive({ useHandCursor: true })
+      zone.on('pointerup', () => {
+        this.settings[key] = opt
+        drawPills()
+      })
+
+      pills.push({ bg, text, zone, value: opt, px })
+      pillContainer.add([bg, text, zone])
+    })
+
+    drawPills()
+    this.settingsPanel.add([labelText, pillContainer])
+  }
+
   // Helper to darken a color
   darkenColor(color, amount) {
     const c = Phaser.Display.Color.ValueToColor(color)
@@ -695,12 +833,9 @@ export class UIScene extends Phaser.Scene {
     this.topBar = this.add.graphics()
     this.drawGlossyPanel(this.topBar, 10, 8, width - 20, 50, 0x0077B6, 14)
 
-    // Resource displays (Club Penguin style - coins, fish, stamps)
-    // Left-aligned with tighter spacing in header bar
+    // Resource displays
     this.resources = {
-      tokens: { icon: 'icon-tokens', value: 0, x: 45, label: 'Coins', displayValue: 0 },
-      issues: { icon: 'icon-issues', value: 0, x: 170, label: 'Fish', displayValue: 0 },
-      tasks: { icon: 'icon-convoys', value: 0, x: 280, label: 'Tasks', displayValue: 0 }
+      tasks: { icon: 'icon-convoys', value: 0, x: 45, label: 'Tasks', displayValue: 0 }
     }
 
     Object.entries(this.resources).forEach(([key, res]) => {
@@ -772,7 +907,7 @@ export class UIScene extends Phaser.Scene {
 
   createMiniStatusBar() {
     // Position between resources and users indicator
-    this.miniStatusBar = this.add.container(395, 33)
+    this.miniStatusBar = this.add.container(250, 33)
 
     // Status counts
     this.miniStatusText = this.add.text(0, 0, '', {
@@ -1155,7 +1290,7 @@ export class UIScene extends Phaser.Scene {
     // Selection card - Club Penguin player card style with frosted glass effect
     // Initially hidden, shown when something is selected
     // Centered on screen
-    this._cardWidth = 220
+    this._cardWidth = 280
     this._currentCardHeight = 300
     const centerX = (this.cameras.main.width - this._cardWidth) / 2
     const centerY = (this.cameras.main.height - this._currentCardHeight) / 2
@@ -1283,8 +1418,8 @@ export class UIScene extends Phaser.Scene {
     // Compute dynamic card height based on status
     const baseHeight = 160  // header + avatar + name + badge + padding
     const hasProgress = (status === 'working' || status === 'stuck')
-    const progressHeight = hasProgress ? 55 : 0
-    const buttonCount = status === 'idle' ? 2 : (status === 'working' ? 3 : 4)
+    const progressHeight = hasProgress ? 30 : 0
+    const buttonCount = status === 'idle' ? 3 : (status === 'working' ? 2 : 4)
     const buttonsHeight = buttonCount * 50
     const watchingHeight = 25  // reserve space even if no watchers (avoids jitter)
     const cardHeight = baseHeight + progressHeight + buttonsHeight + watchingHeight + 15
@@ -1323,7 +1458,8 @@ export class UIScene extends Phaser.Scene {
     })
 
     // Update name
-    this.cardName.setText(unit.unitName || 'Unknown')
+    const displayName = (unit.unitName || 'Unknown').substring(0, 25)
+    this.cardName.setText(displayName + (displayName.length < (unit.unitName || '').length ? '...' : ''))
 
     // Update status badge — reset Y in case building card moved it
     this.cardStatus.setY(140)
@@ -1348,7 +1484,7 @@ export class UIScene extends Phaser.Scene {
     this.cardStatus.setText(statusText)
 
     const badgeWidth = Math.max(this.cardStatus.width + 36, 70)  // wider padding + min width
-    const badgeX = 110 - badgeWidth / 2
+    const badgeX = cardWidth / 2 - badgeWidth / 2
     // Badge with gradient — centered on text at y=140
     const darkStatus = this.darkenColor(statusColor, 40)
     this.cardStatusBg.fillStyle(darkStatus, 1)
@@ -1358,6 +1494,20 @@ export class UIScene extends Phaser.Scene {
     // Shine
     this.cardStatusBg.fillStyle(0xFFFFFF, 0.25)
     this.cardStatusBg.fillRoundedRect(badgeX + 3, 131, badgeWidth - 6, 8, { tl: 8, tr: 8, bl: 0, br: 0 })
+
+    // Docker badge in card header corner
+    if (this.cardDockerBadge) {
+      this.cardDockerBadge.destroy()
+      this.cardDockerBadge = null
+    }
+    if (this.dockerStatus?.enabled && unit.rig) {
+      const containerInfo = this.dockerStatus.containers?.[unit.rig]
+      const isRunning = containerInfo?.running || false
+      this.cardDockerBadge = this.add.text(cardWidth - 15, 15, '🐳', {
+        font: '16px Fredoka'
+      }).setOrigin(1, 0).setAlpha(isRunning ? 1 : 0.3)
+      this.selectionCard.add(this.cardDockerBadge)
+    }
 
     // Clear previous progress info
     if (this.cardProgressContainer) {
@@ -1428,25 +1578,6 @@ export class UIScene extends Phaser.Scene {
 
     this.cardProgressContainer = this.add.container(0, 160)
 
-    // Progress bar background
-    const progressBg = this.add.graphics()
-    progressBg.fillStyle(0xE0E0E0, 1)
-    progressBg.fillRoundedRect(15, 0, cardWidth - 30, 14, 7)
-
-    // Progress bar fill
-    const progress = unit.progress || 0
-    const progressFill = this.add.graphics()
-    if (progress > 0) {
-      progressFill.fillStyle(0x2ECC71, 1)
-      progressFill.fillRoundedRect(15, 0, Math.max(14, (cardWidth - 30) * (progress / 100)), 14, 7)
-    }
-
-    // Progress text
-    const progressText = this.add.text(cardWidth/2, 7, `${progress}%`, {
-      font: 'bold 10px Fredoka',
-      fill: progress > 50 ? '#FFFFFF' : '#333333'
-    }).setOrigin(0.5)
-
     // Time elapsed
     let timeText = ''
     if (unit.assignedAt) {
@@ -1455,56 +1586,49 @@ export class UIScene extends Phaser.Scene {
       timeText = mins < 60 ? `${mins}m` : `${Math.round(mins/60)}h ${mins%60}m`
     }
 
-    const timeLabel = this.add.text(15, 20, `⏱ ${timeText || '--'}`, {
-      font: '11px Fredoka',
+    const timeLabel = this.add.text(15, 0, `⏱ ${timeText || '--'}`, {
+      font: '12px Fredoka',
       fill: '#666666'
     })
-
-    // Token usage
-    const tokens = unit.tokensUsed || 0
-    const tokenLabel = this.add.text(cardWidth - 15, 20, `🪙 ${tokens.toLocaleString()}`, {
-      font: '11px Fredoka',
-      fill: '#666666'
-    }).setOrigin(1, 0)
 
     // Task preview
     if (unit.issue || unit.task) {
       const taskText = (unit.issue || unit.task || '').substring(0, 30)
-      const taskLabel = this.add.text(cardWidth/2, 38, taskText + (taskText.length >= 30 ? '...' : ''), {
+      const taskLabel = this.add.text(cardWidth/2, 18, taskText + (taskText.length >= 30 ? '...' : ''), {
         font: '10px Fredoka',
         fill: '#999999'
       }).setOrigin(0.5, 0)
       this.cardProgressContainer.add(taskLabel)
     }
 
-    this.cardProgressContainer.add([progressBg, progressFill, progressText, timeLabel, tokenLabel])
+    this.cardProgressContainer.add([timeLabel])
     this.selectionCard.add(this.cardProgressContainer)
   }
 
   createCardButtons(status) {
     this.cardButtons.removeAll(true)
 
-    const buttonWidth = 196
+    const buttonWidth = 256
     const buttonHeight = 40
     let buttons = []
 
-    // Different buttons based on status
+    // Different buttons based on status — SHOW SESSION always available
     if (status === 'idle') {
       buttons = [
+        { label: 'SHOW SESSION', action: 'output', color: 0x3498DB, icon: '📄' },
         { label: 'ASSIGN WORK', action: 'sling', color: 0x2ECC71, icon: '>' },
         { label: 'SEND MESSAGE', action: 'mail', color: 0x9B59B6, icon: '@' }
       ]
     } else if (status === 'working') {
       buttons = [
-        { label: 'VIEW OUTPUT', action: 'output', color: 0x3498DB, icon: '📄' },
-        { label: 'TEST STUCK', action: 'teststuck', color: 0xE67E22, icon: '🦭' },
+        { label: 'SHOW SESSION', action: 'output', color: 0x3498DB, icon: '📄' },
         { label: 'STOP WORK', action: 'stop', color: 0xE74C3C, icon: '!' }
       ]
     } else if (status === 'stuck') {
       buttons = [
+        { label: 'SHOW SESSION', action: 'output', color: 0x3498DB, icon: '📄' },
         { label: 'DISMISS AGENT', action: 'dismiss', color: 0xE74C3C, icon: '🗑' },
         { label: 'REASSIGN WORK', action: 'reassign', color: 0xF39C12, icon: '↻' },
-        { label: 'VIEW OUTPUT', action: 'output', color: 0x3498DB, icon: '📄' },
         { label: 'MARK COMPLETE', action: 'complete', color: 0x2ECC71, icon: '✓' }
       ]
     }
@@ -1639,7 +1763,7 @@ export class UIScene extends Phaser.Scene {
     this.time.delayedCall(300, () => { this._cardClickGuard = false })
 
     // Compute dynamic card height based on button count
-    const buttonCount = building.type === 'building-rig' ? 4 :
+    const buttonCount = building.type === 'building-rig' ? 3 :
                          building.type === 'building-barracks' ? 1 : 0
     const baseHeight = 180  // header + avatar + name + badge (extra padding for descenders)
     const buttonsHeight = buttonCount * 50
@@ -1685,7 +1809,8 @@ export class UIScene extends Phaser.Scene {
     })
 
     // Update name
-    this.cardName.setText(building.name)
+    const bldgDisplayName = (building.name || '').substring(0, 25)
+    this.cardName.setText(bldgDisplayName + (bldgDisplayName.length < (building.name || '').length ? '...' : ''))
 
     // Status for building (Y pushed down 15px to clear descenders in name)
     this.cardStatusBg.clear()
@@ -1707,7 +1832,7 @@ export class UIScene extends Phaser.Scene {
   createBuildingButtons(building) {
     this.cardButtons.removeAll(true)
 
-    const buttonWidth = 196
+    const buttonWidth = 256
     const buttonHeight = 40
 
     // Hub buildings get role-appropriate buttons (not rig controls)
@@ -1730,8 +1855,7 @@ export class UIScene extends Phaser.Scene {
       buttons = [
         { label: 'SPAWN AGENT', action: 'spawn', color: 0x2ECC71 },
         { label: 'VIEW AGENTS', action: 'list', color: 0x3498DB },
-        { label: 'CLONE REPO', action: 'clone', color: 0x9B59B6 },
-        { label: 'REMOVE RIG', action: 'remove', color: 0xE74C3C }
+        { label: 'REMOVE PROJECT', action: 'remove', color: 0xE74C3C }
       ]
     }
 
@@ -1833,33 +1957,6 @@ export class UIScene extends Phaser.Scene {
           })
         }
         break
-      case 'clone':
-        const repo = await this.showModal({
-          title: 'CLONE REPO',
-          message: `Clone a repository into ${rigName}`,
-          inputType: 'text',
-          placeholder: 'https://github.com/user/repo'
-        })
-        if (repo && repo.trim()) {
-          try {
-            this.statusText.setText('Cloning...')
-            await this.api.cloneRepo(rigName, repo)
-            this.statusText.setText('Cloned!')
-            await this.showModal({
-              title: 'SUCCESS!',
-              message: `Cloned ${repo} into ${rigName}`,
-              showCancel: false
-            })
-          } catch(e) {
-            this.statusText.setText('Clone failed')
-            await this.showModal({
-              title: 'CLONE FAILED',
-              message: e.message,
-              showCancel: false
-            })
-          }
-        }
-        break
       case 'listAll':
         try {
           const statusResp = await fetch('/api/status')
@@ -1885,28 +1982,31 @@ export class UIScene extends Phaser.Scene {
         this.showOperationsDashboard()
         break
       case 'remove':
-        const result = await this.showModal({
-          title: 'REMOVE RIG',
-          message: `Remove "${rigName}" from the Colony? This unregisters the rig and kills any running sessions.`,
-          checkbox: 'Also delete files on disk',
+        const hasDocker = this.dockerStatus?.enabled
+        const dockerCleanup = hasDocker ? '\n\nThe Docker container for this project will also be stopped and removed.' : ''
+        const removeResult = await this.showModal({
+          title: 'REMOVE PROJECT',
+          message: `Remove "${rigName}" from the Colony?\n\nThis will stop all agents, clear tasks, and delete project configuration.${dockerCleanup}`,
+          checkbox: hasDocker ? 'Also delete workspace files and container volumes' : 'Also delete workspace files on disk',
         })
-        if (result && result.confirmed) {
+        if (removeResult && removeResult.confirmed) {
           try {
-            this.statusText.setText('Removing rig...')
-            const deleteParam = result.checked ? '?deleteFiles=true' : ''
+            this.statusText.setText('Removing project...')
+            const deleteParam = removeResult.checked ? '?deleteFiles=true' : ''
             const resp = await fetch(`/api/rigs/${encodeURIComponent(rigName)}${deleteParam}`, { method: 'DELETE' })
             const data = await resp.json()
             if (!resp.ok) throw new Error(data.error)
             this.hideSelectionCard()
-            this.statusText.setText(`Removed: ${rigName}`)
+            this.statusText.setText(`Project removed: ${rigName}`)
             if (this.gameScene) this.gameScene.refreshState()
+            this.refreshDockerStatus()
             // Reload to clear the colony from the map
             this.time.delayedCall(500, () => location.reload())
           } catch(e) {
             this.statusText.setText('Remove failed')
             await this.showModal({
               title: 'REMOVE FAILED',
-              message: e.message,
+              message: `Failed to remove project: ${e.message}`,
               showCancel: false
             })
           }
@@ -1993,6 +2093,13 @@ export class UIScene extends Phaser.Scene {
       this.hideSelectionCard()
       this.hideBatchPanel()
     } else if (units.length === 1) {
+      // If emperor is clicked, open Emperor chat instead of agent card
+      if (units[0].unitName === 'emperor' || units[0].unitName === 'Emperor') {
+        this.hideSelectionCard()
+        this.hideBatchPanel()
+        this.openEmperorChat()
+        return
+      }
       this.hideBatchPanel()
       this.showSelectionCard(units[0])
     } else {
@@ -2008,15 +2115,11 @@ export class UIScene extends Phaser.Scene {
   }
 
   updateResources(state) {
-    if (state.tokens !== undefined) {
-      this.animateResourceCounter(this.resources.tokens, state.tokens)
-    }
-    if (state.openIssues !== undefined) {
-      this.animateResourceCounter(this.resources.issues, state.openIssues)
-    }
     if (state.activeTasks !== undefined) {
       this.animateResourceCounter(this.resources.tasks, state.activeTasks)
     }
+    // Update Docker indicator if present
+    this.updateDockerIndicator()
   }
 
   executeCommand(action) {
@@ -2053,196 +2156,15 @@ export class UIScene extends Phaser.Scene {
       case 'complete':
         this.doMarkComplete(agentId)
         break
-      case 'teststuck':
-        this.doTestStuck(agentId)
-        break
       case 'output':
-        this.showAgentOutput(agentId, unit.rig)
+        this.showAgentOutput(agentId, unit.rig).catch(err => {
+          console.error('showAgentOutput error:', err)
+          this.statusText.setText('Failed to open session viewer')
+        })
         break
       case 'dismiss':
         this.doDismiss(agentId, unit)
         break
-    }
-  }
-
-  async doTestStuck(agentId) {
-    const confirm = await this.showModal({
-      title: 'TEST SEA LION',
-      message: `Simulate ${agentId} getting stuck?\n\nThis will trigger the sea lion attack animation!`,
-      showCancel: true
-    })
-    if (!confirm) return
-
-    try {
-      this.statusText.setText('Simulating stuck...')
-      await this.api.simulateStuck(agentId)
-      this.statusText.setText('Sea lion incoming!')
-
-      // Refresh to trigger the animation
-      if (this.gameScene) {
-        this.gameScene.refreshState()
-      }
-      this.hideSelectionCard()
-    } catch (e) {
-      this.statusText.setText('Simulation failed')
-      await this.showModal({
-        title: 'ERROR',
-        message: e.message,
-        showCancel: false
-      })
-    }
-  }
-
-  async showSimulateStuckPicker() {
-    // Fetch all polecats from all rigs
-    try {
-      const status = await this.api.getStatus()
-      const polecats = status.polecats || []
-
-      if (polecats.length === 0) {
-        await this.showModal({
-          title: 'NO AGENTS',
-          message: 'Spawn some agents first to test the sea lion attack!',
-          showCancel: false
-        })
-        return
-      }
-
-      // Show picker modal
-      const width = this.cameras.main.width
-      const height = this.cameras.main.height
-      const panelWidth = 350
-      const panelHeight = Math.min(400, 150 + polecats.length * 55)
-
-      const picker = this.add.container(width/2, height/2)
-      picker.setDepth(1500)
-
-      // Backdrop
-      const backdrop = this.add.graphics()
-      backdrop.fillStyle(0x000000, 0.6)
-      backdrop.fillRect(-width/2, -height/2, width, height)
-      backdrop.setInteractive(new Phaser.Geom.Rectangle(-width/2, -height/2, width, height), Phaser.Geom.Rectangle.Contains)
-      backdrop.on('pointerup', () => {
-        picker.destroy()
-      })
-
-      // Panel
-      const panel = this.add.graphics()
-      this.drawGlossyPanel(panel, -panelWidth/2, -panelHeight/2, panelWidth, panelHeight, 0xE67E22, 20)
-      panel.fillStyle(0xFFFFFF, 0.98)
-      panel.fillRoundedRect(-panelWidth/2 + 10, -panelHeight/2 + 60, panelWidth - 20, panelHeight - 80, 12)
-
-      // Title
-      const title = this.add.text(0, -panelHeight/2 + 30, '🦭 SUMMON SEA LION', {
-        font: 'bold 18px Fredoka',
-        fill: '#FFFFFF',
-        stroke: '#C0392B',
-        strokeThickness: 2
-      }).setOrigin(0.5)
-
-      // Subtitle
-      const subtitle = this.add.text(0, -panelHeight/2 + 75, 'Pick an agent to test stuck detection:', {
-        font: '12px Fredoka',
-        fill: '#666666'
-      }).setOrigin(0.5)
-
-      picker.add([backdrop, panel, title, subtitle])
-
-      // List polecats
-      let yPos = -panelHeight/2 + 105
-      for (const polecat of polecats) {
-        const statusIcon = polecat.status === 'working' ? '🔨' : polecat.status === 'stuck' ? '❌' : '💤'
-        const statusColor = polecat.status === 'working' ? 0x2ECC71 : polecat.status === 'stuck' ? 0xE74C3C : 0x95A5A6
-
-        // Row background
-        const rowBg = this.add.graphics()
-        rowBg.fillStyle(0xF8F8F8, 1)
-        rowBg.fillRoundedRect(-panelWidth/2 + 20, yPos, panelWidth - 40, 45, 8)
-
-        // Status badge
-        const badge = this.add.graphics()
-        badge.fillStyle(statusColor, 1)
-        badge.fillRoundedRect(-panelWidth/2 + 28, yPos + 8, 8, 29, 4)
-
-        // Agent name
-        const name = this.add.text(-panelWidth/2 + 48, yPos + 10, `${statusIcon} ${polecat.name}`, {
-          font: 'bold 13px Fredoka',
-          fill: '#333333'
-        })
-
-        // Rig name
-        const rigLabel = this.add.text(-panelWidth/2 + 48, yPos + 28, `in ${polecat.rig || 'unknown'}`, {
-          font: '11px Fredoka',
-          fill: '#888888'
-        })
-
-        // Attack button
-        const attackBtn = this.add.graphics()
-        this.drawButton(attackBtn, panelWidth/2 - 90, yPos + 5, 55, 35, 0xE74C3C, true)
-        const attackText = this.add.text(panelWidth/2 - 62, yPos + 22, '🦭', {
-          font: '18px Fredoka'
-        }).setOrigin(0.5)
-        const attackZone = this.add.zone(panelWidth/2 - 62, yPos + 22, 55, 35)
-        attackZone.setInteractive({ useHandCursor: true })
-        attackZone.on('pointerup', async () => {
-          picker.destroy()
-          const agentId = `${polecat.rig}/${polecat.name}`
-          await this.doTestStuckDirect(agentId)
-        })
-
-        picker.add([rowBg, badge, name, rigLabel, attackBtn, attackText, attackZone])
-        yPos += 55
-      }
-
-      // Animate in
-      picker.setScale(0.8)
-      picker.setAlpha(0)
-      this.tweens.add({
-        targets: picker,
-        scale: 1,
-        alpha: 1,
-        duration: 200,
-        ease: 'Back.easeOut'
-      })
-
-    } catch (e) {
-      await this.showModal({
-        title: 'ERROR',
-        message: 'Failed to load agents: ' + e.message,
-        showCancel: false
-      })
-    }
-  }
-
-  async doTestStuckDirect(agentId) {
-    try {
-      this.statusText.setText('Summoning sea lion...')
-
-      // Extract polecat name from agentId (format: teamName/memberName)
-      const parts = agentId.split('/')
-      const polecatName = parts[parts.length - 1]
-
-      // Find the unit directly and play animation
-      if (this.gameScene) {
-        const unit = this.gameScene.units.get(`polecat-${polecatName}`)
-        if (unit) {
-          this.playNotificationSound('stuck')
-          this.gameScene.playSeaLionAttack(unit)
-          this.statusText.setText('Sea lion incoming!')
-
-          // Also update the server status
-          this.api.simulateStuck(agentId).catch(() => {})
-        } else {
-          this.statusText.setText('Agent not found in game')
-        }
-      }
-    } catch (e) {
-      this.statusText.setText('Simulation failed')
-      await this.showModal({
-        title: 'ERROR',
-        message: e.message,
-        showCancel: false
-      })
     }
   }
 
@@ -3433,7 +3355,7 @@ export class UIScene extends Phaser.Scene {
     // Colony navigator - small panel to jump between colonies
     const x = 20
     const y = this.cameras.main.height - 200
-    const width = 150
+    const width = 200
 
     this.colonyNav = this.add.container(x, y)
     this.colonyNav.setDepth(100)
@@ -3460,7 +3382,7 @@ export class UIScene extends Phaser.Scene {
 
   updateColonyNavigator() {
     const colonies = this.gameScene?.colonies || []
-    const width = 150
+    const width = 200
     const buttonHeight = 32
 
     // Clear existing buttons
@@ -3501,15 +3423,14 @@ export class UIScene extends Phaser.Scene {
       statusDot.fillStyle(0xFFFFFF, 0.4)
       statusDot.fillCircle(18, y + buttonHeight/2 - 2, 2)
 
-      // Label (left-aligned after status dot, truncated for long names)
+      // Label (left-aligned after status dot, pixel-width truncated)
       const labelX = 32  // after dot (20) + gap
-      const maxLabelWidth = width - 60  // leave room for dot + count badge + padding
+      const maxLabelWidth = width - 65  // leave room for dot + count badge + padding
       let displayName = colony.name
       const label = this.add.text(labelX, y + buttonHeight/2 - 1, displayName, {
         font: 'bold 10px Fredoka',
         fill: '#FFFFFF'
       }).setOrigin(0, 0.5)
-      // Truncate with ellipsis if too wide
       while (label.width > maxLabelWidth && displayName.length > 3) {
         displayName = displayName.slice(0, -1)
         label.setText(displayName + '...')
@@ -3558,7 +3479,20 @@ export class UIScene extends Phaser.Scene {
         }
       })
 
-      this.colonyButtons.add([btn, statusDot, label, count, zone])
+      // Docker whale icon — replace count badge with whale+count when enabled
+      const elements = [btn, statusDot, label, count, zone]
+      if (this.dockerStatus?.enabled && !colony.isHub) {
+        const containerInfo = this.dockerStatus.containers?.[colony.name]
+        const isRunning = containerInfo?.running || false
+        // Replace the status dot with a whale icon
+        statusDot.clear()
+        const whale = this.add.text(20, y + buttonHeight/2 - 1, '🐳', {
+          font: '9px Fredoka'
+        }).setOrigin(0.5).setAlpha(isRunning ? 1 : 0.3)
+        elements.push(whale)
+      }
+
+      this.colonyButtons.add(elements)
     })
 
     // Reposition the navigator based on new height
@@ -4949,7 +4883,16 @@ export class UIScene extends Phaser.Scene {
       this._term.dispose()
       this._term = null
     }
-    if (this._termContainer) {
+    if (this._termEscHandler) {
+      document.removeEventListener('keydown', this._termEscHandler)
+      this._termEscHandler = null
+    }
+    if (this._termWrapper) {
+      this._termWrapper.remove()
+      this._termWrapper = null
+      this._termContainer = null
+      this._domSessionLabel = null
+    } else if (this._termContainer) {
       this._termContainer.remove()
       this._termContainer = null
     }
@@ -4958,8 +4901,17 @@ export class UIScene extends Phaser.Scene {
       this._logPollInterval = null
     }
     // Re-enable Phaser keyboard
-    this.input.keyboard.enabled = true
-    this.input.keyboard.startListeners()
+    try {
+      this.input.keyboard.enabled = true
+      this.input.keyboard.startListeners()
+    } catch (e) {
+      console.warn('Could not re-enable keyboard:', e)
+    }
+
+    // Restore Emperor chat input if panel is open
+    if (this.emperorChat?.visible && this.chatInput) {
+      this.chatInput.style.display = 'block'
+    }
 
     if (this.outputViewer) {
       this.outputViewer.destroy()
@@ -4978,90 +4930,104 @@ export class UIScene extends Phaser.Scene {
       this._closeOutputViewer()
     }
 
-    this.outputViewer = this.add.container(width/2, height/2)
-    this.outputViewer.setDepth(1500)
+    // Hide Emperor chat input so it doesn't bleed through
+    if (this.chatInput) {
+      this.chatInput.style.display = 'none'
+    }
+
+    // Mark viewer as open (used by _closeOutputViewer)
+    this.outputViewer = { destroy: () => {} }
     this._outputViewerAgentId = agentId
 
-    // Backdrop
-    const backdrop = this.add.graphics()
-    backdrop.fillStyle(0x000000, 0.7)
-    backdrop.fillRect(-width/2, -height/2, width, height)
-    backdrop.setInteractive(new Phaser.Geom.Rectangle(-width/2, -height/2, width, height), Phaser.Geom.Rectangle.Contains)
+    // Disable Phaser keyboard to let xterm.js handle input
+    try {
+      this.input.keyboard.enabled = false
+      this.input.keyboard.stopListeners()
+    } catch (e) {
+      console.warn('Could not disable keyboard:', e)
+    }
 
-    // Panel
-    const panel = this.add.graphics()
-    this.drawGlossyPanel(panel, -modalWidth/2, -modalHeight/2, modalWidth, modalHeight, 0x1A1A2E, 20)
-    panel.fillStyle(0x0D0D1A, 1)
-    panel.fillRoundedRect(-modalWidth/2 + 10, -modalHeight/2 + 50, modalWidth - 20, modalHeight - 60, 12)
+    // Full-screen DOM overlay: backdrop + modal with header + terminal
+    const overlay = document.createElement('div')
+    overlay.id = 'colony-terminal-overlay'
+    overlay.style.cssText = `
+      position: fixed; inset: 0; z-index: 10000;
+      background: rgba(0,0,0,0.7);
+      display: flex; align-items: center; justify-content: center;
+    `
+    // Click backdrop to close
+    overlay.addEventListener('click', (e) => {
+      if (e.target === overlay) this._closeOutputViewer()
+    })
+    document.body.appendChild(overlay)
+    this._termWrapper = overlay
 
-    // Title — truncate agent path if too long for modal
-    const maxTitleLen = Math.floor((modalWidth - 200) / 10)
-    const displayId = agentId.length > maxTitleLen ? '...' + agentId.slice(-maxTitleLen) : agentId
-    const title = this.add.text(-modalWidth/2 + 20, -modalHeight/2 + 25, `TERMINAL: ${displayId}`, {
-      font: 'bold 14px Fredoka',
-      fill: '#FFFFFF',
-      stroke: '#1A252F',
-      strokeThickness: 2
-    }).setOrigin(0, 0.5)
+    // Modal box
+    const modal = document.createElement('div')
+    modal.style.cssText = `
+      width: ${modalWidth}px; height: ${modalHeight}px;
+      background: #1A1A2E; border-radius: 16px;
+      display: flex; flex-direction: column; overflow: hidden;
+      box-shadow: 0 8px 32px rgba(0,0,0,0.5);
+    `
+    overlay.appendChild(modal)
 
-    // Session status indicator
-    const sessionDot = this.add.graphics()
-    const sessionLabel = this.add.text(modalWidth/2 - 60, -modalHeight/2 + 25, 'connecting...', {
-      font: '11px Fredoka',
-      fill: '#7F8C8D'
-    }).setOrigin(1, 0.5)
+    // Header bar
+    const header = document.createElement('div')
+    header.style.cssText = `
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 0 16px; height: 46px; min-height: 46px;
+      background: linear-gradient(180deg, #2A2A4E 0%, #1A1A2E 100%);
+      border-bottom: 1px solid #333;
+    `
+    modal.appendChild(header)
+
+    // Title
+    const titleEl = document.createElement('span')
+    const maxTitleLen2 = Math.floor((modalWidth - 200) / 10)
+    const displayId2 = agentId.length > maxTitleLen2 ? '...' + agentId.slice(-maxTitleLen2) : agentId
+    titleEl.textContent = `SESSION: ${displayId2}`
+    titleEl.style.cssText = `
+      font: bold 14px Fredoka, sans-serif; color: #fff;
+    `
+    header.appendChild(titleEl)
+
+    // Status + close button container
+    const headerRight = document.createElement('div')
+    headerRight.style.cssText = `display: flex; align-items: center; gap: 12px;`
+    header.appendChild(headerRight)
+
+    // Status label (updated later via this._domSessionLabel)
+    const statusLabel = document.createElement('span')
+    statusLabel.textContent = 'connecting...'
+    statusLabel.style.cssText = `font: 11px Fredoka, sans-serif; color: #7F8C8D;`
+    headerRight.appendChild(statusLabel)
+    this._domSessionLabel = statusLabel
 
     // Close button
-    const closeBtn = this.add.graphics()
-    closeBtn.fillStyle(0xFF6B6B, 0.9)
-    closeBtn.fillCircle(modalWidth/2 - 25, -modalHeight/2 + 20, 14)
-    const closeX = this.add.text(modalWidth/2 - 25, -modalHeight/2 + 20, '\u00d7', {
-      font: 'bold 18px Fredoka',
-      fill: '#FFFFFF'
-    }).setOrigin(0.5)
-    const closeZone = this.add.zone(modalWidth/2 - 25, -modalHeight/2 + 20, 28, 28).setInteractive({ useHandCursor: true })
-    closeZone.on('pointerup', () => {
-      this._closeOutputViewer()
-    })
+    const closeBtn = document.createElement('button')
+    closeBtn.innerHTML = '&times;'
+    closeBtn.style.cssText = `
+      width: 28px; height: 28px; border-radius: 50%; border: none;
+      background: #FF6B6B; color: white; font-size: 18px; font-weight: bold;
+      cursor: pointer; display: flex; align-items: center; justify-content: center;
+    `
+    closeBtn.addEventListener('click', () => this._closeOutputViewer())
+    headerRight.appendChild(closeBtn)
 
-    this.outputViewer.add([backdrop, panel, title, sessionDot, sessionLabel, closeBtn, closeX, closeZone])
-
-    // Disable Phaser keyboard to let xterm.js handle input
-    this.input.keyboard.enabled = false
-    this.input.keyboard.stopListeners()
-
-    // Get the canvas position to overlay the DOM terminal
-    const canvas = this.game.canvas
-    const canvasRect = canvas.getBoundingClientRect()
-
-    // Calculate terminal position in page coords
-    const termLeft = canvasRect.left + (width - modalWidth) / 2 + 15
-    const termTop = canvasRect.top + (height - modalHeight) / 2 + 55
-    const termWidth = modalWidth - 30
-    const termHeight = modalHeight - 65
-
-    // Fetch hook data for status bar
-    try {
-      const hookData = await this.api.getHook(agentId)
-      this._updateSessionIndicator(sessionDot, sessionLabel, hookData.sessionAlive !== false)
-    } catch { /* ignore */ }
-
-    // Create DOM container for xterm.js
+    // Terminal container
     const termContainer = document.createElement('div')
     termContainer.id = 'colony-terminal'
     termContainer.style.cssText = `
-      position: fixed;
-      left: ${termLeft}px;
-      top: ${termTop}px;
-      width: ${termWidth}px;
-      height: ${termHeight}px;
-      z-index: 10000;
-      border-radius: 8px;
-      overflow: hidden;
-      background: #0D0D1A;
+      flex: 1; margin: 8px; border-radius: 8px;
+      overflow: hidden; background: #0D0D1A;
     `
-    document.body.appendChild(termContainer)
+    modal.appendChild(termContainer)
     this._termContainer = termContainer
+
+    // Escape key to close
+    this._termEscHandler = (e) => { if (e.key === 'Escape') this._closeOutputViewer() }
+    document.addEventListener('keydown', this._termEscHandler)
 
     // Dynamically import xterm.js
     const { Terminal } = await import('@xterm/xterm')
@@ -5131,7 +5097,7 @@ export class UIScene extends Phaser.Scene {
     })
 
     socket.on('attached', (data) => {
-      this._updateSessionIndicator(sessionDot, sessionLabel, true)
+      this._updateSessionIndicator(null, null, true)
       // Clear the "connecting" message
       term.clear()
     })
@@ -5143,7 +5109,7 @@ export class UIScene extends Phaser.Scene {
     socket.on('error', (data) => {
       term.writeln(`\x1b[31mError: ${data.message}\x1b[0m`)
       term.writeln('\x1b[33mFalling back to read-only log view...\x1b[0m')
-      this._updateSessionIndicator(sessionDot, sessionLabel, false)
+      this._updateSessionIndicator(null, null, false)
 
       // Fallback: show captured logs
       this._showFallbackLogs(agentId, term)
@@ -5151,11 +5117,11 @@ export class UIScene extends Phaser.Scene {
 
     socket.on('exit', (data) => {
       term.writeln(`\x1b[33m\r\n--- Session detached (exit code: ${data.code}) ---\x1b[0m`)
-      this._updateSessionIndicator(sessionDot, sessionLabel, false)
+      this._updateSessionIndicator(null, null, false)
     })
 
     socket.on('disconnect', () => {
-      this._updateSessionIndicator(sessionDot, sessionLabel, false)
+      this._updateSessionIndicator(null, null, false)
     })
 
     // Forward terminal input to server
@@ -5166,17 +5132,6 @@ export class UIScene extends Phaser.Scene {
     // Handle resize
     term.onResize(({ cols, rows }) => {
       socket.emit('resize', { cols, rows })
-    })
-
-    // Animate the Phaser overlay in
-    this.outputViewer.setScale(0.95)
-    this.outputViewer.setAlpha(0)
-    this.tweens.add({
-      targets: this.outputViewer,
-      scale: 1,
-      alpha: 1,
-      duration: 150,
-      ease: 'Power2'
     })
 
     // Focus the terminal
@@ -5216,19 +5171,28 @@ export class UIScene extends Phaser.Scene {
   }
 
   _updateSessionIndicator(dot, label, isActive) {
-    dot.clear()
-    const dotX = label.x - label.width - 12
-    const dotY = label.y
-    if (isActive) {
-      dot.fillStyle(0x2ECC71, 1)
-      dot.fillCircle(dotX, dotY, 5)
-      label.setText('CONNECTED')
-      label.setStyle({ fill: '#2ECC71' })
-    } else {
-      dot.fillStyle(0xE74C3C, 1)
-      dot.fillCircle(dotX, dotY, 5)
-      label.setText('DISCONNECTED')
-      label.setStyle({ fill: '#E74C3C' })
+    // DOM-based status label (used by new all-DOM terminal modal)
+    if (this._domSessionLabel) {
+      this._domSessionLabel.textContent = isActive ? 'CONNECTED' : 'DISCONNECTED'
+      this._domSessionLabel.style.color = isActive ? '#2ECC71' : '#E74C3C'
+      return
+    }
+    // Legacy Phaser-based indicator
+    if (dot?.clear) {
+      dot.clear()
+      const dotX = label.x - label.width - 12
+      const dotY = label.y
+      if (isActive) {
+        dot.fillStyle(0x2ECC71, 1)
+        dot.fillCircle(dotX, dotY, 5)
+        label.setText('CONNECTED')
+        label.setStyle({ fill: '#2ECC71' })
+      } else {
+        dot.fillStyle(0xE74C3C, 1)
+        dot.fillCircle(dotX, dotY, 5)
+        label.setText('DISCONNECTED')
+        label.setStyle({ fill: '#E74C3C' })
+      }
     }
   }
 

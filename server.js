@@ -240,6 +240,45 @@ for (const team of backend.listTeams()) {
       }
     }
   }
+
+  // Ensure every project has at least one agent with a live tmux session
+  // (emperor is a separate entity, not counted as a regular agent)
+  const teammates = backend.getTeammates(team.name).filter(t => t.name !== 'emperor')
+  const hasLiveAgent = teammates.some(t => backend.isTeammateAlive(team.name, t.name))
+  if (!hasLiveAgent) {
+    // First, try to resume an existing agent with a saved Claude session ID
+    const sessionMap = backend._getSessionMap(team.name)
+    const resumable = teammates
+      .map(t => ({ name: t.name, sInfo: sessionMap[t.name] }))
+      .filter(t => t.sInfo?.claudeSessionId && !t.sInfo?.alive)
+      .sort((a, b) => (b.sInfo.startedAt || '').localeCompare(a.sInfo.startedAt || ''))
+
+    if (resumable.length > 0) {
+      const agent = resumable[0]
+      try {
+        backend.resumeSession(team.name, agent.name)
+        console.log(`[startup] Resumed session for "${agent.name}" in project "${team.name}" (session: ${agent.sInfo.claudeSessionId})`)
+      } catch (e) {
+        console.error(`[startup] Failed to resume ${agent.name} for ${team.name}:`, e.message)
+      }
+    } else {
+      // No resumable sessions — spawn a fresh agent_1
+      const primaryName = 'agent_1'
+      try {
+        backend.spawnTeammate(team.name, primaryName)
+        const tmuxName = backend._tmuxName(team.name, primaryName)
+        if (!backend.isTmuxSessionAlive(tmuxName, { teamName: team.name })) {
+          backend.spawnTmuxSession(tmuxName, null, { teamName: team.name })
+          const map = backend._getSessionMap(team.name)
+          map[primaryName] = { ...map[primaryName], alive: true }
+          backend._saveSessionMap(team.name, map)
+        }
+        console.log(`[startup] Auto-spawned ${primaryName} for project "${team.name}"`)
+      } catch (e) {
+        console.error(`[startup] Failed to auto-spawn agent for ${team.name}:`, e.message)
+      }
+    }
+  }
 }
 
 // ===== STUCK DETECTION =====
@@ -323,7 +362,7 @@ app.get('/api/status', (req, res) => {
   status.polecats = []
   let activeTasks = 0
   for (const team of teams) {
-    const teammates = backend.getTeammates(team.name)
+    const teammates = backend.getTeammates(team.name).filter(t => t.name !== 'emperor')
     status.polecats.push(...teammates)
     const tasks = backend.getTasksForTeam(team.name)
     activeTasks += tasks.filter(t => t.status === 'in_progress').length
@@ -388,6 +427,10 @@ app.post('/api/rigs/:name/polecats', (req, res) => {
 
   const memberName = polecatName || `agent_${Date.now()}`
 
+  if (!/^[a-zA-Z0-9_]+$/.test(memberName)) {
+    return res.status(400).json({ error: 'Invalid agent name. Use alphanumeric or underscores only.' })
+  }
+
   try {
     const result = backend.spawnTeammate(name, memberName, cwd || null)
 
@@ -403,7 +446,8 @@ app.post('/api/rigs/:name/polecats', (req, res) => {
 
 // GET /api/rigs/:name/polecats - Get teammates for a team
 app.get('/api/rigs/:name/polecats', (req, res) => {
-  const teammates = backend.getTeammates(req.params.name)
+  // Emperor has its own UI — filter from agent list
+  const teammates = backend.getTeammates(req.params.name).filter(t => t.name !== 'emperor')
   res.json(teammates)
 })
 
@@ -761,51 +805,23 @@ app.post('/api/agents/:id/resume', (req, res) => {
   }
 })
 
-// POST /api/agents/:id/simulate-stuck - Simulate stuck (dev/test only)
-app.post('/api/agents/:id/simulate-stuck', (req, res) => {
-  if (process.env.NODE_ENV === 'production') {
-    return res.status(403).json({ error: 'Not available in production' })
+// ===== DOCKER STATUS =====
+
+app.get('/api/docker/status', (req, res) => {
+  const teams = backend.listTeams()
+  const containers = {}
+  for (const team of teams) {
+    containers[team.name] = {
+      name: backend._containerName(team.name),
+      running: backend.isContainerRunning(team.name)
+    }
   }
-
-  const { teamName, memberName } = parseAgentId(req.params.id)
-
-  if (!teamName) {
-    return res.status(404).json({ error: 'Agent not found' })
-  }
-
-  // Create a stuck-simulating task: just mark as in_progress with old mtime
-  const currentTask = backend.getTeammateCurrentTask(teamName, memberName)
-  if (!currentTask) {
-    // Create a fake in-progress task
-    backend.createTask(teamName, {
-      subject: 'Simulated stuck task',
-      description: 'Test task for stuck detection',
-      owner: memberName,
-      activeForm: 'Simulated stuck'
-    })
-  }
-
-  multiplayer.broadcastStateUpdate({
-    event: 'polecat:stuck',
-    rig: teamName,
-    polecat: memberName,
-    reason: 'tokens'
+  res.json({
+    enabled: backend.dockerEnabled,
+    image: backend.dockerImage,
+    networkIsolation: backend.networkIsolation,
+    containers
   })
-
-  multiplayer.broadcastNotification({
-    type: 'stuck',
-    message: `${memberName} exceeded token limit!`,
-    agent: memberName,
-    rig: teamName
-  })
-
-  addActivityEvent('agent_stuck', {
-    agent: memberName,
-    rig: teamName,
-    reason: 'tokens'
-  })
-
-  res.json({ success: true, message: `${memberName} is now stuck (simulated)` })
 })
 
 // ===== SETTINGS =====
@@ -1310,6 +1326,10 @@ app.post('/api/batch/spawn', (req, res) => {
     return res.status(400).json({ error: 'Team name required' })
   }
 
+  if (!/^[a-zA-Z0-9_]+$/.test(prefix)) {
+    return res.status(400).json({ error: 'Invalid prefix. Use alphanumeric or underscores only.' })
+  }
+
   const results = []
 
   for (let i = 0; i < Math.min(count, 10); i++) {
@@ -1583,10 +1603,16 @@ app.get('/api/emperor/stream', (req, res) => {
     return
   }
 
-  // Send initial captured output
+  // Send initial captured output (skip raw terminal noise like theme picker)
   const initial = backend.captureEmperor(teamName)
   if (initial) {
-    res.write(`data: ${JSON.stringify({ type: 'initial', content: initial })}\n\n`)
+    // Filter: only send if it looks like actual Claude conversation output
+    // (not the first-run theme picker or startup ASCII art)
+    const cleaned = initial.replace(/[\s\n\r]/g, '')
+    const isNoise = cleaned.includes('Choosethetextstyle') || cleaned.includes('Syntaxhighlighting') || cleaned.length < 10
+    if (!isNoise) {
+      res.write(`data: ${JSON.stringify({ type: 'initial', content: initial })}\n\n`)
+    }
   }
 
   // Poll tmux capture-pane every 2 seconds
@@ -1595,8 +1621,13 @@ app.get('/api/emperor/stream', (req, res) => {
     try {
       const current = backend.captureEmperor(teamName) || ''
       if (current !== lastOutput) {
-        const newContent = current.length > lastOutput.length ? current.slice(lastOutput.length) : current
-        res.write(`data: ${JSON.stringify({ type: 'text_delta', text: newContent })}\n\n`)
+        // Filter noise (theme picker, startup art)
+        const cleaned = current.replace(/[\s\n\r]/g, '')
+        const isNoise = cleaned.includes('Choosethetextstyle') || cleaned.includes('Syntaxhighlighting')
+        if (!isNoise) {
+          const newContent = current.length > lastOutput.length ? current.slice(lastOutput.length) : current
+          res.write(`data: ${JSON.stringify({ type: 'text_delta', text: newContent })}\n\n`)
+        }
         lastOutput = current
       }
     } catch { /* ignore */ }
@@ -1631,15 +1662,17 @@ app.use((err, req, res, next) => {
 const terminalNs = multiplayer.io.of('/terminal')
 
 terminalNs.use((socket, next) => {
-  // Reuse session middleware for auth
-  const req = socket.request
-  sessionMiddleware(req, {}, () => {
-    if (req.session?.passport?.user || process.env.NODE_ENV !== 'production') {
-      next()
-    } else {
-      next(new Error('Authentication required'))
-    }
-  })
+  // Apply session middleware to parse cookies (same pattern as multiplayer namespace)
+  sessionMiddleware(socket.request, {}, next)
+})
+terminalNs.use((socket, next) => {
+  const session = socket.request.session
+  if (session?.passport?.user || process.env.NODE_ENV !== 'production') {
+    next()
+  } else {
+    console.error('[terminal] Auth rejected — no passport user in session')
+    next(new Error('Authentication required'))
+  }
 })
 
 terminalNs.on('connection', (socket) => {
@@ -1673,17 +1706,11 @@ terminalNs.on('connection', (socket) => {
 
     let proc
     if (backend.dockerEnabled && teamName) {
-      // Docker mode: attach to tmux inside container via docker exec -it
+      // Docker mode: use script(1) to allocate PTY for docker exec → tmux attach
       const container = backend._containerName(teamName)
-      proc = spawn('docker', [
-        'exec', '-it',
-        '-e', `TERM=xterm-256color`,
-        '-e', `COLUMNS=${cols}`,
-        '-e', `LINES=${rows}`,
-        container,
-        'tmux', 'attach-session', '-t', sessionName
-      ], {
-        env: { ...process.env }
+      const dockerCmd = `docker exec -it -e TERM=xterm-256color -e COLUMNS=${cols} -e LINES=${rows} ${container} tmux attach-session -t '${safeSession}'`
+      proc = spawn('script', ['-qc', dockerCmd, '/dev/null'], {
+        env: { ...process.env, TERM: 'xterm-256color', COLUMNS: String(cols), LINES: String(rows) }
       })
     } else {
       // Host mode: use script(1) to force TTY allocation for tmux

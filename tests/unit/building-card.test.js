@@ -8,22 +8,21 @@ function getBuildingButtons(buildingType) {
     return []
   } else if (buildingType === 'building-barracks') {
     return [
-      { label: 'VIEW ALL POLECATS', action: 'listAll', color: 0x3498DB }
+      { label: 'VIEW ALL AGENTS', action: 'listAll', color: 0x3498DB }
     ]
   } else {
     // Rig buildings (building-rig or any other type)
     return [
-      { label: 'SPAWN POLECAT', action: 'spawn', color: 0x2ECC71 },
-      { label: 'VIEW POLECATS', action: 'list', color: 0x3498DB },
-      { label: 'CLONE REPO', action: 'clone', color: 0x9B59B6 },
-      { label: 'REMOVE RIG', action: 'remove', color: 0xE74C3C }
+      { label: 'SPAWN AGENT', action: 'spawn', color: 0x2ECC71 },
+      { label: 'VIEW AGENTS', action: 'list', color: 0x3498DB },
+      { label: 'REMOVE PROJECT', action: 'remove', color: 0xE74C3C }
     ]
   }
 }
 
 /** Computes the building card height (mirrors UIScene.showBuildingCard). */
 function buildingCardHeight(buildingType) {
-  const buttonCount = buildingType === 'building-rig' ? 4 :
+  const buttonCount = buildingType === 'building-rig' ? 3 :
                        buildingType === 'building-barracks' ? 1 : 0
   const baseHeight = 180
   const buttonsHeight = buttonCount * 50
@@ -46,21 +45,20 @@ describe('Building button config', () => {
     expect(buttons).toHaveLength(0)
   })
 
-  it('barracks has 1 button (VIEW ALL POLECATS)', () => {
+  it('barracks has 1 button (VIEW ALL AGENTS)', () => {
     const buttons = getBuildingButtons('building-barracks')
     expect(buttons).toHaveLength(1)
-    expect(buttons[0].label).toBe('VIEW ALL POLECATS')
+    expect(buttons[0].label).toBe('VIEW ALL AGENTS')
     expect(buttons[0].action).toBe('listAll')
   })
 
-  it('rig has 4 buttons (SPAWN, VIEW, CLONE, REMOVE)', () => {
+  it('rig has 3 buttons (SPAWN, VIEW, REMOVE)', () => {
     const buttons = getBuildingButtons('building-rig')
-    expect(buttons).toHaveLength(4)
+    expect(buttons).toHaveLength(3)
     expect(buttons.map(b => b.label)).toEqual([
-      'SPAWN POLECAT',
-      'VIEW POLECATS',
-      'CLONE REPO',
-      'REMOVE RIG'
+      'SPAWN AGENT',
+      'VIEW AGENTS',
+      'REMOVE PROJECT'
     ])
   })
 })
@@ -74,8 +72,8 @@ describe('Building card height formula', () => {
     expect(buildingCardHeight('building-barracks')).toBe(290)
   })
 
-  it('rig: 180 + 4*50 + 60 = 440', () => {
-    expect(buildingCardHeight('building-rig')).toBe(440)
+  it('rig: 180 + 3*50 + 60 = 390', () => {
+    expect(buildingCardHeight('building-rig')).toBe(390)
   })
 })
 

@@ -803,9 +803,9 @@ export class GameScene extends Phaser.Scene {
       })
     }
 
-    // Add polecats to their rigs
+    // Add polecats to their rigs (filter out emperor — it has its own sprite)
     if (state.polecats) {
-      state.polecats.forEach((pc, i) => {
+      state.polecats.filter(pc => pc.name !== 'emperor').forEach((pc, i) => {
         const status = pc.status === 'working' ? 'unit-polecat-working' :
                        pc.status === 'stuck' ? 'unit-polecat-stuck' : 'unit-polecat-idle'
 
@@ -1193,8 +1193,9 @@ export class GameScene extends Phaser.Scene {
       }
 
       // Update unit states (and add new polecats that don't exist yet)
+      // Filter emperor — it has its own dedicated sprite at the HQ
       if (state.polecats) {
-        state.polecats.forEach(pc => {
+        state.polecats.filter(pc => pc.name !== 'emperor').forEach(pc => {
           const unitKey = `polecat-${pc.name}`
 
           // Skip polecats that were eaten by sea lion (stuck + already animated)

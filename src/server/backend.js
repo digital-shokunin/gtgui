@@ -46,7 +46,7 @@ export class AgentTeamsBackend {
     const args = [
       'docker', 'run', '-d',
       '--name', name,
-      '-v', `${this.claudeAuthDir}:/home/agent/.claude:ro`,
+      '-v', `${this.claudeAuthDir}:/home/agent/.claude`,
       '-e', 'NPM_CONFIG_IGNORE_SCRIPTS=true',
       '-e', 'NPM_CONFIG_AUDIT_LEVEL=critical',
       '-e', 'CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1',
@@ -106,8 +106,21 @@ export class AgentTeamsBackend {
   }
 
   // Parse teamName from a tmux session name (colony_{team}_{member})
+  // Both team and member names can contain underscores, so match against known teams
   _teamFromTmuxName(sessionName) {
-    const m = sessionName.match(/^colony_([^_]+)_/)
+    if (!sessionName.startsWith('colony_')) return null
+    const rest = sessionName.slice(7) // strip "colony_"
+    // Try matching against known team names (longest first to avoid partial matches)
+    try {
+      const teams = readdirSync(this.teamsRoot)
+        .filter(d => existsSync(join(this.teamsRoot, d, 'config.json')))
+        .sort((a, b) => b.length - a.length) // longest first
+      for (const team of teams) {
+        if (rest.startsWith(team + '_')) return team
+      }
+    } catch { /* teams dir may not exist */ }
+    // Fallback: first segment (works for simple names without underscores)
+    const m = rest.match(/^([^_]+)/)
     return m ? m[1] : null
   }
 
@@ -122,9 +135,13 @@ export class AgentTeamsBackend {
   spawnTmuxSession(sessionName, prompt = null, options = {}) {
     const teamName = options.teamName || this._teamFromTmuxName(sessionName)
 
-    let claudeCmd = this.claudePath + ' --dangerously-skip-permissions'
+    // Use 'claude' in Docker (resolved via container PATH) vs host absolute path
+    const claudeBin = (this.dockerEnabled && teamName) ? 'claude' : this.claudePath
+    let claudeCmd = claudeBin + ' --dangerously-skip-permissions'
     if (options.resumeSessionId) {
-      claudeCmd += ` --resume ${options.resumeSessionId}`
+      // Sanitize session ID to prevent injection (alphanumeric + hyphens only)
+      const safeId = String(options.resumeSessionId).replace(/[^a-zA-Z0-9_-]/g, '')
+      if (safeId) claudeCmd += ` --resume ${safeId}`
     }
     if (prompt && !options.resumeSessionId) {
       // Escape for shell
@@ -140,11 +157,8 @@ export class AgentTeamsBackend {
     const safeSession = sessionName.replace(/'/g, "'\\''")
     const safeCmd = fullCmd.replace(/'/g, "'\\''")
     // Session auto-destroys when claude exits (no lingering shell)
-    const tmuxCmds = [
-      `tmux new-session -d -s '${safeSession}' '${safeCmd}'`,
-      `tmux set-option -t '${safeSession}' remain-on-exit off`,
-      `tmux set-option -t '${safeSession}' destroy-unattached off`
-    ].join(' && ')
+    // Use ; for set-option so failures don't abort the spawn (defaults are already off)
+    const tmuxCmds = `tmux new-session -d -s '${safeSession}' '${safeCmd}'; tmux set-option -t '${safeSession}' remain-on-exit off 2>/dev/null; tmux set-option -t '${safeSession}' destroy-unattached off 2>/dev/null`
 
     if (this.dockerEnabled && teamName) {
       this.ensureContainer(teamName)
@@ -700,20 +714,18 @@ export class AgentTeamsBackend {
     const sInfo = sessionMap.emperor || {}
 
     // Build the claude command with all features enabled
-    let claudeCmd = this.claudePath + ' --dangerously-skip-permissions --verbose'
+    const claudeBin = this.dockerEnabled ? 'claude' : this.claudePath
+    let claudeCmd = claudeBin + ' --dangerously-skip-permissions --verbose'
     if (sInfo.claudeSessionId) {
-      claudeCmd += ` --resume ${sInfo.claudeSessionId}`
+      const safeId = String(sInfo.claudeSessionId).replace(/[^a-zA-Z0-9_-]/g, '')
+      if (safeId) claudeCmd += ` --resume ${safeId}`
     }
 
     const envPrefix = 'CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1'
     const fullCmd = `${envPrefix} ${claudeCmd}`
     const safeSession = tmuxName.replace(/'/g, "'\\''")
     const safeCmd = fullCmd.replace(/'/g, "'\\''")
-    const tmuxCmds = [
-      `tmux new-session -d -s '${safeSession}' '${safeCmd}'`,
-      `tmux set-option -t '${safeSession}' remain-on-exit off`,
-      `tmux set-option -t '${safeSession}' destroy-unattached off`
-    ].join(' && ')
+    const tmuxCmds = `tmux new-session -d -s '${safeSession}' '${safeCmd}'; tmux set-option -t '${safeSession}' remain-on-exit off 2>/dev/null; tmux set-option -t '${safeSession}' destroy-unattached off 2>/dev/null`
 
     if (this.dockerEnabled) {
       this.ensureContainer(teamName)
