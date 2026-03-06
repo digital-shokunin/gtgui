@@ -225,6 +225,33 @@ export class AgentTeamsBackend {
     writeFileSync(configPath, JSON.stringify(config, null, 2))
   }
 
+  // Fully dismiss a teammate: stop session, fail tasks, remove from config
+  dismissTeammate(teamName, name) {
+    // Stop the session
+    this.stopTeammate(teamName, name)
+
+    // Mark any in_progress tasks as failed
+    const tasks = this.getTasksForTeam(teamName)
+    for (const task of tasks) {
+      if (task.owner === name && task.status === 'in_progress') {
+        this.updateTask(teamName, task.id, {
+          status: 'completed',
+          completedAt: new Date().toISOString(),
+          failReason: 'dismissed'
+        })
+      }
+    }
+
+    // Remove session from registry
+    const key = this._sessionKey(teamName, name)
+    this.sessions.delete(key)
+
+    // Remove from team config
+    this.removeTeammate(teamName, name)
+
+    return true
+  }
+
   // ===== TASK MANAGEMENT =====
 
   getTasksForTeam(teamName) {
@@ -402,6 +429,7 @@ export class AgentTeamsBackend {
       session.process = proc
       session.status = 'running'
       session.lastActivity = Date.now()
+      console.log(`[${key}] Spawned claude process (PID ${proc.pid})`)
 
       // Parse NDJSON from stdout
       this._processCliStream(key, session, proc)
@@ -409,6 +437,11 @@ export class AgentTeamsBackend {
       proc.on('exit', (code) => {
         session.status = code === 0 ? 'idle' : 'error'
         session.lastActivity = Date.now()
+        if (code !== 0) {
+          console.error(`[${key}] claude process exited with code ${code}`)
+        } else {
+          console.log(`[${key}] claude process completed successfully`)
+        }
         // Notify listeners of completion
         this._notifyListeners(key, { type: 'session_end', code })
       })
@@ -491,6 +524,7 @@ export class AgentTeamsBackend {
     if (proc.stderr) {
       const errRl = createInterface({ input: proc.stderr })
       errRl.on('line', (line) => {
+        console.error(`[${key}] stderr: ${line}`)
         this._addMessage(session, { type: 'stderr', text: line, ts: Date.now() })
       })
     }

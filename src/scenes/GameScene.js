@@ -1378,8 +1378,9 @@ export class GameScene extends Phaser.Scene {
           }
         }
 
-        // Notify UI
+        // Notify UI and dismiss on backend
         this.events.emit('selectionChanged', [])
+        this.events.emit('agentDismissed', { unitId, unitName, rig: unit.rig })
       }
     })
 

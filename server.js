@@ -207,10 +207,20 @@ function saveSettings(settings) {
 let currentSettings = loadSettings()
 
 // ===== STUCK DETECTION (replaces pollWitnessAlerts) =====
+const alertedStuckAgents = new Set()  // dedup: only alert once per stuck agent
+
 function checkStuckTeammates() {
   const alerts = backend.checkStuck(currentSettings)
+  const currentStuck = new Set()
 
   for (const alert of alerts) {
+    const key = `${alert.rig}/${alert.agent}`
+    currentStuck.add(key)
+
+    // Only alert once per stuck agent
+    if (alertedStuckAgents.has(key)) continue
+    alertedStuckAgents.add(key)
+
     multiplayer.broadcastNotification({
       type: 'stuck',
       agent: alert.agent,
@@ -225,6 +235,11 @@ function checkStuckTeammates() {
       rig: alert.rig,
       reason: alert.type
     })
+  }
+
+  // Clear agents that are no longer stuck (so they can re-alert if stuck again)
+  for (const key of alertedStuckAgents) {
+    if (!currentStuck.has(key)) alertedStuckAgents.delete(key)
   }
 }
 
@@ -547,6 +562,27 @@ app.post('/api/agents/:id/stop', (req, res) => {
   }
 
   const success = backend.stopTeammate(teamName, memberName)
+  res.json({ success })
+})
+
+// POST /api/agents/:id/dismiss - Fully remove agent (stop, fail tasks, remove from config)
+app.post('/api/agents/:id/dismiss', (req, res) => {
+  const { teamName, memberName } = parseAgentId(req.params.id)
+
+  if (!teamName) {
+    return res.status(404).json({ error: 'Agent not found' })
+  }
+
+  const success = backend.dismissTeammate(teamName, memberName)
+
+  // Clear from stuck alert dedup
+  alertedStuckAgents.delete(`${teamName}/${memberName}`)
+
+  addActivityEvent('agent_dismissed', {
+    agent: memberName,
+    rig: teamName
+  }, req.session?.passport?.user)
+
   res.json({ success })
 })
 

@@ -55,9 +55,10 @@ export class UIScene extends Phaser.Scene {
     this.createAgentOutputViewer()
     this.createGitHubPanel()
 
-    // Listen for new colonies
+    // Listen for new colonies and agent dismissals
     if (this.gameScene) {
       this.gameScene.events.on('colonyAdded', this.updateColonyNavigator, this)
+      this.gameScene.events.on('agentDismissed', this.onAgentDismissed, this)
     }
 
     // Handle resize
@@ -367,7 +368,7 @@ export class UIScene extends Phaser.Scene {
     const width = this.cameras.main.width
     const height = this.cameras.main.height
     const panelWidth = 400
-    const panelHeight = 560
+    const panelHeight = 640
 
     this.settingsPanel = this.add.container(width/2, height/2)
     this.settingsPanel.setDepth(1500)
@@ -443,7 +444,7 @@ export class UIScene extends Phaser.Scene {
     nameInput.style.cssText = `
       position: fixed;
       left: ${width/2 - panelWidth/2 + 25}px;
-      top: ${height/2 - panelHeight/2 + 60 + yPos + 22}px;
+      top: ${height/2 + yPos + 20}px;
       width: ${panelWidth - 50}px;
       height: 32px;
       font-family: 'Fredoka', sans-serif;
@@ -454,9 +455,13 @@ export class UIScene extends Phaser.Scene {
       outline: none;
       box-sizing: border-box;
     `
-    nameInput.onfocus = () => { nameInput.style.borderColor = '#0077B6' }
-    nameInput.onblur = () => { nameInput.style.borderColor = '#B0E0E6' }
+    nameInput.onfocus = () => { nameInput.style.borderColor = '#0077B6'; this.input.keyboard.enabled = false; this.input.keyboard.stopListeners() }
+    nameInput.onblur = () => { nameInput.style.borderColor = '#B0E0E6'; this.input.keyboard.enabled = true; this.input.keyboard.startListeners() }
     nameInput.oninput = () => { this.settings.emperorName = nameInput.value }
+    // Prevent Phaser from swallowing key events
+    nameInput.addEventListener('keydown', e => e.stopPropagation())
+    nameInput.addEventListener('keyup', e => e.stopPropagation())
+    nameInput.addEventListener('keypress', e => e.stopPropagation())
     document.body.appendChild(nameInput)
     this._emperorNameInput = nameInput
     yPos += 60
@@ -483,12 +488,15 @@ export class UIScene extends Phaser.Scene {
       font: 'bold 14px Fredoka',
       fill: '#FFFFFF'
     }).setOrigin(0.5)
-    const stuckZone = this.add.zone(-80, yPos + 20, 140, 40)
+    const stuckZone = this.add.zone(-80, yPos + 20, 140, 46)
     stuckZone.setInteractive({ useHandCursor: true })
-    stuckZone.on('pointerup', () => {
+    const doStuck = () => {
       this._closeSettingsPanel()
       this.showSimulateStuckPicker()
-    })
+    }
+    stuckZone.on('pointerup', doStuck)
+    stuckText.setInteractive({ useHandCursor: true })
+    stuckText.on('pointerup', doStuck)
     this.settingsPanel.add([stuckBtn, stuckText, stuckZone])
 
     // Save button
@@ -499,13 +507,16 @@ export class UIScene extends Phaser.Scene {
       font: 'bold 16px Fredoka',
       fill: '#FFFFFF'
     }).setOrigin(0.5)
-    const saveZone = this.add.zone(0, yPos + 22, 160, 44)
+    const saveZone = this.add.zone(0, yPos + 22, 160, 50)
     saveZone.setInteractive({ useHandCursor: true })
-    saveZone.on('pointerup', () => {
+    const doSave = () => {
       this.saveSettings()
       this.showNotification('success', 'Settings Saved', 'Your preferences have been updated')
       this._closeSettingsPanel()
-    })
+    }
+    saveZone.on('pointerup', doSave)
+    saveText.setInteractive({ useHandCursor: true })
+    saveText.on('pointerup', doSave)
 
     this.settingsPanel.add([saveBtn, saveText, saveZone])
 
@@ -1185,7 +1196,7 @@ export class UIScene extends Phaser.Scene {
 
     // Status badge background
     this.cardStatusBg = this.add.graphics()
-    this.cardStatus = this.add.text(cardWidth/2, 142, 'IDLE', {
+    this.cardStatus = this.add.text(cardWidth/2, 140, 'IDLE', {
       font: 'bold 13px Fredoka',
       fill: '#FFFFFF'
     }).setOrigin(0.5, 0.5)
@@ -1313,7 +1324,8 @@ export class UIScene extends Phaser.Scene {
     // Update name
     this.cardName.setText(unit.unitName || 'Unknown')
 
-    // Update status badge
+    // Update status badge — reset Y in case building card moved it
+    this.cardStatus.setY(140)
     this.cardStatusBg.clear()
 
     let statusColor, statusText
@@ -1334,16 +1346,17 @@ export class UIScene extends Phaser.Scene {
     // Set text FIRST so we can measure its width for the badge
     this.cardStatus.setText(statusText)
 
-    const textWidth = this.cardStatus.width + 24
-    // Badge with gradient
+    const badgeWidth = Math.max(this.cardStatus.width + 36, 70)  // wider padding + min width
+    const badgeX = 110 - badgeWidth / 2
+    // Badge with gradient — centered on text at y=140
     const darkStatus = this.darkenColor(statusColor, 40)
     this.cardStatusBg.fillStyle(darkStatus, 1)
-    this.cardStatusBg.fillRoundedRect(110 - textWidth/2, 134, textWidth, 24, 12)
+    this.cardStatusBg.fillRoundedRect(badgeX, 131, badgeWidth, 24, 12)
     this.cardStatusBg.fillStyle(statusColor, 1)
-    this.cardStatusBg.fillRoundedRect(110 - textWidth/2, 132, textWidth, 22, 11)
+    this.cardStatusBg.fillRoundedRect(badgeX, 129, badgeWidth, 22, 11)
     // Shine
     this.cardStatusBg.fillStyle(0xFFFFFF, 0.25)
-    this.cardStatusBg.fillRoundedRect(110 - textWidth/2 + 3, 134, textWidth - 6, 8, { tl: 8, tr: 8, bl: 0, br: 0 })
+    this.cardStatusBg.fillRoundedRect(badgeX + 3, 131, badgeWidth - 6, 8, { tl: 8, tr: 8, bl: 0, br: 0 })
 
     // Clear previous progress info
     if (this.cardProgressContainer) {
@@ -1488,10 +1501,10 @@ export class UIScene extends Phaser.Scene {
       ]
     } else if (status === 'stuck') {
       buttons = [
-        { label: 'VIEW OUTPUT', action: 'output', color: 0xE74C3C, icon: '📄' },
+        { label: 'DISMISS AGENT', action: 'dismiss', color: 0xE74C3C, icon: '🗑' },
         { label: 'REASSIGN WORK', action: 'reassign', color: 0xF39C12, icon: '↻' },
-        { label: 'MARK COMPLETE', action: 'complete', color: 0x2ECC71, icon: '✓' },
-        { label: 'STOP', action: 'stop', color: 0x95A5A6, icon: 'X' }
+        { label: 'VIEW OUTPUT', action: 'output', color: 0x3498DB, icon: '📄' },
+        { label: 'MARK COMPLETE', action: 'complete', color: 0x2ECC71, icon: '✓' }
       ]
     }
 
@@ -2045,6 +2058,9 @@ export class UIScene extends Phaser.Scene {
       case 'output':
         this.showAgentOutput(agentId, unit.rig)
         break
+      case 'dismiss':
+        this.doDismiss(agentId, unit)
+        break
     }
   }
 
@@ -2226,6 +2242,53 @@ export class UIScene extends Phaser.Scene {
         message: e.message,
         showCancel: false
       })
+    }
+  }
+
+  async doDismiss(agentId, unit) {
+    const confirm = await this.showModal({
+      title: 'DISMISS AGENT',
+      message: `Remove ${agentId}?\n\nThis will stop the agent, fail its tasks, and remove it from the team.`,
+      showCancel: true
+    })
+    if (!confirm) return
+
+    try {
+      this.statusText.setText('Dismissing...')
+      await this.api.dismiss(agentId)
+      this.hideSelectionCard()
+
+      // Remove from game scene
+      if (this.gameScene && unit) {
+        this.gameScene.units.delete(unit.id)
+        this.gameScene.eatenPolecats.add(unit.id)
+        unit.destroy()
+        for (const colony of this.gameScene.colonies) {
+          const idx = colony.polecats?.indexOf(unit.unitName)
+          if (idx > -1) colony.polecats.splice(idx, 1)
+        }
+      }
+
+      this.statusText.setText(`${agentId} dismissed`)
+    } catch (e) {
+      this.statusText.setText('Dismiss failed')
+      await this.showModal({
+        title: 'DISMISS FAILED',
+        message: e.message,
+        showCancel: false
+      })
+    }
+  }
+
+  // Called when sea lion eats an agent — clean up backend state
+  async onAgentDismissed({ unitId, unitName, rig }) {
+    if (!rig || !unitName) return
+    const agentId = `${rig}/${unitName}`
+    try {
+      await this.api.dismiss(agentId)
+      console.log(`Dismissed agent ${agentId} from backend`)
+    } catch (e) {
+      console.error(`Failed to dismiss ${agentId}:`, e.message)
     }
   }
 
@@ -2697,12 +2760,13 @@ export class UIScene extends Phaser.Scene {
 
     // Title — show Emperor's configured name
     const emperorName = this.settings?.emperorName || 'Tiberius Claudius'
-    const title = this.add.text(85, 20, emperorName.toUpperCase(), {
+    this._emperorChatTitle = this.add.text(85, 20, emperorName.toUpperCase(), {
       font: 'bold 18px Fredoka',
       fill: '#FFFFFF',
       stroke: '#6B3510',
       strokeThickness: 2
     })
+    const title = this._emperorChatTitle
 
     const subtitle = this.add.text(85, 44, 'Emperor - Colony Coordinator', {
       font: '13px Fredoka',
@@ -2768,6 +2832,12 @@ export class UIScene extends Phaser.Scene {
   }
 
   openEmperorChat() {
+    // Refresh title with current Emperor name from settings
+    if (this._emperorChatTitle) {
+      const name = this.settings?.emperorName || 'Tiberius Claudius'
+      this._emperorChatTitle.setText(name.toUpperCase())
+    }
+
     this.emperorChat.setVisible(true)
     this.emperorChat.setAlpha(0)
     this.emperorChat.setX(this.cameras.main.width)
@@ -3430,11 +3500,19 @@ export class UIScene extends Phaser.Scene {
       statusDot.fillStyle(0xFFFFFF, 0.4)
       statusDot.fillCircle(18, y + buttonHeight/2 - 2, 2)
 
-      // Label (offset to make room for status dot)
-      const label = this.add.text(width/2 + 5, y + buttonHeight/2 - 1, colony.name, {
+      // Label (left-aligned after status dot, truncated for long names)
+      const labelX = 32  // after dot (20) + gap
+      const maxLabelWidth = width - 60  // leave room for dot + count badge + padding
+      let displayName = colony.name
+      const label = this.add.text(labelX, y + buttonHeight/2 - 1, displayName, {
         font: 'bold 10px Fredoka',
         fill: '#FFFFFF'
-      }).setOrigin(0.5)
+      }).setOrigin(0, 0.5)
+      // Truncate with ellipsis if too wide
+      while (label.width > maxLabelWidth && displayName.length > 3) {
+        displayName = displayName.slice(0, -1)
+        label.setText(displayName + '...')
+      }
 
       // Agent count — hub shows Emperor (1), rigs show agents
       const agentCount = colony.isHub ? 1 : (colony.polecats?.length || 0)

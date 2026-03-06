@@ -79,6 +79,11 @@ export class GasTownAPI {
     return this.request(`/agents/${encodeURIComponent(agentId)}/stop`, { method: 'POST' })
   }
 
+  // Fully dismiss agent (stop, fail tasks, remove from config)
+  async dismiss(agentId) {
+    return this.request(`/agents/${encodeURIComponent(agentId)}/dismiss`, { method: 'POST' })
+  }
+
   // Get costs
   async getCosts() {
     return this.request('/costs')
