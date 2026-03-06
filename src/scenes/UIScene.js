@@ -1115,10 +1115,6 @@ export class UIScene extends Phaser.Scene {
       this.userWatchers.get(agentId).add(userId)
     }
 
-    // Update selection card if showing watched agent
-    if (this.selectedUnit && this.selectionCard?.visible) {
-      this.updateWatchingIndicator()
-    }
   }
 
   updateUserStatus(userId, status) {
@@ -1421,8 +1417,7 @@ export class UIScene extends Phaser.Scene {
     const progressHeight = hasProgress ? 30 : 0
     const buttonCount = status === 'idle' ? 3 : (status === 'working' ? 2 : 4)
     const buttonsHeight = buttonCount * 50
-    const watchingHeight = 25  // reserve space even if no watchers (avoids jitter)
-    const cardHeight = baseHeight + progressHeight + buttonsHeight + watchingHeight + 15
+    const cardHeight = baseHeight + progressHeight + buttonsHeight + 15
 
     // Redraw card background at computed height
     this._redrawCardBg(cardHeight)
@@ -1526,51 +1521,7 @@ export class UIScene extends Phaser.Scene {
     // Create contextual action buttons
     this.createCardButtons(status)
 
-    // Update watching indicator (positioned at bottom of dynamic card)
-    this.updateWatchingIndicator()
-
-    // Emit watching event to server
-    if (this.multiplayer?.socket) {
-      this.multiplayer.socket.emit('watching', { agentId: unit.id })
-    }
-
     this.statusText.setText(`Selected: ${unit.unitName}`)
-  }
-
-  updateWatchingIndicator() {
-    // Remove previous watching indicator
-    if (this.watchingIndicator) {
-      this.watchingIndicator.destroy()
-      this.watchingIndicator = null
-    }
-
-    if (!this.selectedUnit || !this.selectionCard?.visible) return
-
-    const agentId = this.selectedUnit.id
-    const watchers = this.userWatchers.get(agentId)
-
-    if (watchers && watchers.size > 0) {
-      // Create watching indicator at bottom of dynamic card
-      this.watchingIndicator = this.add.container(110, this._currentCardHeight - 20)
-
-      // Background pill
-      const bg = this.add.graphics()
-      const watcherCount = watchers.size
-      const text = `👁 ${watcherCount} watching`
-      const pillWidth = 90
-
-      bg.fillStyle(0x9B59B6, 0.9)
-      bg.fillRoundedRect(-pillWidth/2, -10, pillWidth, 20, 10)
-
-      // Text
-      const watchText = this.add.text(0, 0, text, {
-        font: 'bold 10px Fredoka',
-        fill: '#FFFFFF'
-      }).setOrigin(0.5)
-
-      this.watchingIndicator.add([bg, watchText])
-      this.selectionCard.add(this.watchingIndicator)
-    }
   }
 
   showCardProgress(unit) {
@@ -1726,17 +1677,6 @@ export class UIScene extends Phaser.Scene {
       }
     })
 
-    // Clear watching indicator
-    if (this.watchingIndicator) {
-      this.watchingIndicator.destroy()
-      this.watchingIndicator = null
-    }
-
-    // Emit watching null to server
-    if (this.multiplayer?.socket) {
-      this.multiplayer.socket.emit('watching', { agentId: null })
-    }
-
     this.selectedUnit = null
     // Clear selection in game scene
     if (this.gameScene) {
@@ -1751,12 +1691,6 @@ export class UIScene extends Phaser.Scene {
     this.selectionCard.setVisible(true)
     this.selectedUnit = null
     this.selectedBuilding = building
-
-    // Clear any leftover watching indicator from previous selection
-    if (this.watchingIndicator) {
-      this.watchingIndicator.destroy()
-      this.watchingIndicator = null
-    }
 
     // Prevent accidental button clicks from the same pointer event that opened the card
     this._cardClickGuard = true
