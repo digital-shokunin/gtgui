@@ -1746,16 +1746,18 @@ export class UIScene extends Phaser.Scene {
     const bldgDisplayName = (building.name || '').substring(0, 25)
     this.cardName.setText(bldgDisplayName + (bldgDisplayName.length < (building.name || '').length ? '...' : ''))
 
-    // Status for building (Y pushed down 15px to clear descenders in name)
-    this.cardStatusBg.clear()
-    this.cardStatusBg.fillStyle(0x6B3510, 1)
-    this.cardStatusBg.fillRoundedRect(55, 145, 100, 24, 12)
-    this.cardStatusBg.fillStyle(0x8B4513, 1)
-    this.cardStatusBg.fillRoundedRect(55, 143, 100, 22, 11)
-    this.cardStatusBg.fillStyle(0xFFFFFF, 0.25)
-    this.cardStatusBg.fillRoundedRect(58, 145, 94, 8, { tl: 8, tr: 8, bl: 0, br: 0 })
+    // Status for building — centered like normal status badges
     this.cardStatus.setText('BUILDING')
     this.cardStatus.setY(153)
+    const bldgBadgeWidth = Math.max(this.cardStatus.width + 36, 70)
+    const bldgBadgeX = this._cardWidth / 2 - bldgBadgeWidth / 2
+    this.cardStatusBg.clear()
+    this.cardStatusBg.fillStyle(0x6B3510, 1)
+    this.cardStatusBg.fillRoundedRect(bldgBadgeX, 145, bldgBadgeWidth, 24, 12)
+    this.cardStatusBg.fillStyle(0x8B4513, 1)
+    this.cardStatusBg.fillRoundedRect(bldgBadgeX, 143, bldgBadgeWidth, 22, 11)
+    this.cardStatusBg.fillStyle(0xFFFFFF, 0.25)
+    this.cardStatusBg.fillRoundedRect(bldgBadgeX + 3, 145, bldgBadgeWidth - 6, 8, { tl: 8, tr: 8, bl: 0, br: 0 })
 
     // Building-specific buttons
     this.createBuildingButtons(building)
