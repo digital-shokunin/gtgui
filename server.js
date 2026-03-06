@@ -41,6 +41,23 @@ app.use('/api', (req, res, next) => {
 // Setup multiplayer WebSocket
 const multiplayer = new MultiplayerServer(httpServer, sessionMiddleware)
 
+// ===== Penguin species names for agents =====
+const KING_PENGUIN = 'king'  // Lead agent name — always spawned first
+const PENGUIN_NAMES = [
+  'gentoo', 'adelie', 'chinstrap', 'macaroni',
+  'rockhopper', 'magellanic', 'humboldt', 'galapagos', 'african',
+  'royal', 'snares', 'fiordland', 'erect_crested', 'yellow_eyed',
+  'little_blue', 'fairy'
+]
+
+function getNextPenguinName(teamName) {
+  const existing = Object.keys(backend._getSessionMap(teamName))
+  for (const name of PENGUIN_NAMES) {
+    if (!existing.includes(name)) return name
+  }
+  return `penguin_${Date.now()}`
+}
+
 // ===== NEW: Agent Teams Backend =====
 const GTGUI_DATA = process.env.GTGUI_DATA || join(process.env.HOME, '.gtgui')
 mkdirSync(GTGUI_DATA, { recursive: true })
@@ -263,8 +280,8 @@ for (const team of backend.listTeams()) {
         console.error(`[startup] Failed to resume ${agent.name} for ${team.name}:`, e.message)
       }
     } else {
-      // No resumable sessions — spawn a fresh agent_1
-      const primaryName = 'agent_1'
+      // No resumable sessions — spawn a fresh lead agent
+      const primaryName = KING_PENGUIN
       try {
         backend.spawnTeammate(team.name, primaryName)
         const tmuxName = backend._tmuxName(team.name, primaryName)
@@ -426,7 +443,7 @@ app.post('/api/rigs/:name/polecats', (req, res) => {
   const { name } = req.params
   const { polecatName, cwd } = req.body
 
-  const memberName = polecatName || `agent_${Date.now()}`
+  const memberName = polecatName || getNextPenguinName(name)
 
   if (!/^[a-zA-Z0-9_]+$/.test(memberName)) {
     return res.status(400).json({ error: 'Invalid agent name. Use alphanumeric or underscores only.' })
@@ -1430,7 +1447,7 @@ app.post('/api/templates/:id/create', (req, res) => {
 
     const teammates = []
     for (let i = 0; i < template.defaultAgentCount; i++) {
-      const name = `agent_${i + 1}`
+      const name = i === 0 ? KING_PENGUIN : (PENGUIN_NAMES[i - 1] || `penguin_${i}`)
       try {
         backend.spawnTeammate(projectName, name)
         teammates.push(name)

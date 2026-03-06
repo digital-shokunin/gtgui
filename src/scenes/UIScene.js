@@ -418,7 +418,7 @@ export class UIScene extends Phaser.Scene {
     const width = this.cameras.main.width
     const height = this.cameras.main.height
     const panelWidth = 400
-    const panelHeight = 740
+    const panelHeight = 800
 
     this.settingsPanel = this.add.container(width/2, height/2)
     this.settingsPanel.setDepth(1500)
@@ -532,19 +532,19 @@ export class UIScene extends Phaser.Scene {
 
     // Docker Sandbox toggle
     this.addSettingToggle('Docker Sandbox', 'dockerEnabled', yPos)
-    yPos += 45
+    yPos += 40
 
     // Network Isolation toggle
     this.addSettingToggle('Network Isolation', 'networkIsolation', yPos)
-    yPos += 50
+    yPos += 45
 
     // Memory pill selector
     this.addSettingDropdown('Memory', 'containerMemory', ['1g', '2g', '4g', '8g'], yPos)
-    yPos += 45
+    yPos += 40
 
     // CPUs pill selector
     this.addSettingDropdown('CPUs', 'containerCpus', ['1', '2', '4'], yPos)
-    yPos += 50
+    yPos += 45
 
     // Docker Image text field
     const imgLabel = this.add.text(-panelWidth/2 + 25, yPos, 'Docker Image', {
