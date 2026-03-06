@@ -409,7 +409,7 @@ export class AgentTeamsBackend {
       session.process.kill('SIGTERM')
     }
 
-    const args = ['-p', msg, '--output-format', 'stream-json', '--dangerously-skip-permissions']
+    const args = ['-p', msg, '--output-format', 'stream-json', '--verbose', '--dangerously-skip-permissions']
 
     // Resume if we have a prior session ID
     if (session.sessionId) {
