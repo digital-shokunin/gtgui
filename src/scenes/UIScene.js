@@ -1321,20 +1321,20 @@ export class UIScene extends Phaser.Scene {
     this.cardAvatar.setScale(0.8)
 
     // Name with better typography
-    this.cardName = this.add.text(cardWidth/2, 105, 'Penguin', {
+    this.cardName = this.add.text(cardWidth/2, 110, 'Penguin', {
       font: 'bold 20px Fredoka',
       fill: '#0077B6'
     }).setOrigin(0.5, 0)
 
     // Status badge background
     this.cardStatusBg = this.add.graphics()
-    this.cardStatus = this.add.text(cardWidth/2, 140, 'IDLE', {
+    this.cardStatus = this.add.text(cardWidth/2, 150, 'IDLE', {
       font: 'bold 13px Fredoka',
       fill: '#FFFFFF'
     }).setOrigin(0.5, 0.5)
 
     // Action buttons container
-    this.cardButtons = this.add.container(12, 165)
+    this.cardButtons = this.add.container(12, 178)
 
     // Close button with hover effect
     const closeBtnBg = this.add.graphics()
@@ -1412,12 +1412,12 @@ export class UIScene extends Phaser.Scene {
     const status = unit.status || 'idle'
 
     // Compute dynamic card height based on status
-    const baseHeight = 160  // header + avatar + name + badge + padding
+    const baseHeight = 178  // header + avatar + name + badge + padding
     const hasProgress = (status === 'working' || status === 'stuck')
     const progressHeight = hasProgress ? 30 : 0
     const buttonCount = status === 'idle' ? 3 : (status === 'working' ? 2 : 4)
-    const buttonsHeight = buttonCount * 50
-    const cardHeight = baseHeight + progressHeight + buttonsHeight + 15
+    const buttonsHeight = buttonCount * 52
+    const cardHeight = baseHeight + progressHeight + buttonsHeight + 20
 
     // Redraw card background at computed height
     this._redrawCardBg(cardHeight)
@@ -1457,7 +1457,7 @@ export class UIScene extends Phaser.Scene {
     this.cardName.setText(displayName + (displayName.length < (unit.unitName || '').length ? '...' : ''))
 
     // Update status badge — reset Y in case building card moved it
-    this.cardStatus.setY(140)
+    this.cardStatus.setY(150)
     this.cardStatusBg.clear()
 
     let statusColor, statusText
@@ -1480,15 +1480,15 @@ export class UIScene extends Phaser.Scene {
 
     const badgeWidth = Math.max(this.cardStatus.width + 36, 70)  // wider padding + min width
     const badgeX = cardWidth / 2 - badgeWidth / 2
-    // Badge with gradient — centered on text at y=140
+    // Badge with gradient — centered on text at y=150
     const darkStatus = this.darkenColor(statusColor, 40)
     this.cardStatusBg.fillStyle(darkStatus, 1)
-    this.cardStatusBg.fillRoundedRect(badgeX, 131, badgeWidth, 24, 12)
+    this.cardStatusBg.fillRoundedRect(badgeX, 141, badgeWidth, 24, 12)
     this.cardStatusBg.fillStyle(statusColor, 1)
-    this.cardStatusBg.fillRoundedRect(badgeX, 129, badgeWidth, 22, 11)
+    this.cardStatusBg.fillRoundedRect(badgeX, 139, badgeWidth, 22, 11)
     // Shine
     this.cardStatusBg.fillStyle(0xFFFFFF, 0.25)
-    this.cardStatusBg.fillRoundedRect(badgeX + 3, 131, badgeWidth - 6, 8, { tl: 8, tr: 8, bl: 0, br: 0 })
+    this.cardStatusBg.fillRoundedRect(badgeX + 3, 141, badgeWidth - 6, 8, { tl: 8, tr: 8, bl: 0, br: 0 })
 
     // Docker badge in card header corner
     if (this.cardDockerBadge) {
@@ -1498,8 +1498,8 @@ export class UIScene extends Phaser.Scene {
     if (this.dockerStatus?.enabled && unit.rig) {
       const containerInfo = this.dockerStatus.containers?.[unit.rig]
       const isRunning = containerInfo?.running || false
-      this.cardDockerBadge = this.add.text(cardWidth - 15, 15, '🐳', {
-        font: '16px Fredoka'
+      this.cardDockerBadge = this.add.text(cardWidth - 45, 15, '🐳', {
+        font: '14px Fredoka'
       }).setOrigin(1, 0).setAlpha(isRunning ? 1 : 0.3)
       this.selectionCard.add(this.cardDockerBadge)
     }
@@ -1527,7 +1527,7 @@ export class UIScene extends Phaser.Scene {
   showCardProgress(unit) {
     const cardWidth = this._cardWidth
 
-    this.cardProgressContainer = this.add.container(0, 160)
+    this.cardProgressContainer = this.add.container(0, 168)
 
     // Time elapsed
     let timeText = ''
@@ -1585,7 +1585,7 @@ export class UIScene extends Phaser.Scene {
     }
 
     buttons.forEach((btn, i) => {
-      const y = i * (buttonHeight + 10)
+      const y = i * (buttonHeight + 12)
       const darkColor = this.darkenColor(btn.color, 50)
 
       const bg = this.add.graphics()
@@ -4817,10 +4817,7 @@ export class UIScene extends Phaser.Scene {
       this._term.dispose()
       this._term = null
     }
-    if (this._termEscHandler) {
-      document.removeEventListener('keydown', this._termEscHandler)
-      this._termEscHandler = null
-    }
+    // Note: Escape handler is on the overlay element which is removed below
     if (this._termWrapper) {
       this._termWrapper.remove()
       this._termWrapper = null
@@ -4959,13 +4956,19 @@ export class UIScene extends Phaser.Scene {
     modal.appendChild(termContainer)
     this._termContainer = termContainer
 
-    // Escape key to close
-    this._termEscHandler = (e) => { if (e.key === 'Escape') this._closeOutputViewer() }
-    document.addEventListener('keydown', this._termEscHandler)
+    // Block keyboard events from bubbling to Phaser's global window-level listener.
+    // Without this, Phaser intercepts space and other keys even when "disabled".
+    overlay.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') this._closeOutputViewer()
+      e.stopPropagation()
+    })
+    overlay.addEventListener('keyup', (e) => e.stopPropagation())
+    overlay.addEventListener('keypress', (e) => e.stopPropagation())
 
     // Dynamically import xterm.js
     const { Terminal } = await import('@xterm/xterm')
     const { FitAddon } = await import('@xterm/addon-fit')
+    const { Unicode11Addon } = await import('@xterm/addon-unicode11')
 
     const term = new Terminal({
       cursorBlink: true,
@@ -4996,6 +4999,10 @@ export class UIScene extends Phaser.Scene {
       },
       allowProposedApi: true
     })
+
+    const unicode11Addon = new Unicode11Addon()
+    term.loadAddon(unicode11Addon)
+    term.unicode.activeVersion = '11'
 
     const fitAddon = new FitAddon()
     term.loadAddon(fitAddon)

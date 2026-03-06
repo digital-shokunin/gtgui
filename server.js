@@ -4,7 +4,8 @@ import { createServer } from 'http'
 import { fileURLToPath } from 'url'
 import { dirname, join } from 'path'
 import { writeFileSync, readFileSync, mkdirSync, existsSync } from 'fs'
-import { spawn } from 'child_process'
+import { spawn, execSync } from 'child_process'
+import pty from 'node-pty'
 import { setupAuth, getSessionMiddleware, requireAuth } from './src/server/auth.js'
 import { MultiplayerServer } from './src/server/multiplayer.js'
 import { AgentTeamsBackend } from './src/server/backend.js'
@@ -1678,6 +1679,8 @@ terminalNs.use((socket, next) => {
 terminalNs.on('connection', (socket) => {
   console.log(`[terminal] Client connected: ${socket.id}`)
   let tmuxProc = null
+  let currentSession = null
+  let currentTeam = null
 
   socket.on('attach', (data) => {
     const { sessionName } = data
@@ -1700,64 +1703,75 @@ terminalNs.on('connection', (socket) => {
       try { tmuxProc.kill() } catch { /* ignore */ }
     }
 
-    const cols = data.cols || 120
+    const cols = (data.cols || 120) - 1  // -1 to prevent right-edge clipping (e.g. tmux date)
     const rows = data.rows || 40
     const safeSession = sessionName.replace(/'/g, "'\\''")
+    const isDocker = backend.dockerEnabled && teamName
 
-    let proc
-    if (backend.dockerEnabled && teamName) {
-      // Docker mode: use script(1) to allocate PTY for docker exec → tmux attach
+    // Both modes use node-pty for proper PTY with resize support.
+    // Docker mode: stty raw -echo on outer PTY prevents double line-discipline
+    // interference (buffering, echo, space eating) before exec'ing docker.
+    let cmd, args
+    if (isDocker) {
       const container = backend._containerName(teamName)
-      const dockerCmd = `docker exec -it -e TERM=xterm-256color -e COLUMNS=${cols} -e LINES=${rows} ${container} tmux attach-session -t '${safeSession}'`
-      proc = spawn('script', ['-qc', dockerCmd, '/dev/null'], {
-        env: { ...process.env, TERM: 'xterm-256color', COLUMNS: String(cols), LINES: String(rows) }
-      })
+      cmd = 'sh'
+      args = ['-c', `stty raw -echo; exec docker exec -it -e TERM=xterm-256color -e LANG=en_US.UTF-8 -e LC_ALL=en_US.UTF-8 -e COLUMNS=${cols} -e LINES=${rows} ${container} tmux attach-session -t '${safeSession}'`]
     } else {
-      // Host mode: use script(1) to force TTY allocation for tmux
-      const platform = process.platform
-      if (platform === 'darwin') {
-        proc = spawn('script', ['-q', '/dev/null', 'tmux', 'attach-session', '-t', sessionName], {
-          env: { ...process.env, TERM: 'xterm-256color', COLUMNS: String(cols), LINES: String(rows) }
-        })
-      } else {
-        proc = spawn('script', ['-qc', `tmux attach-session -t '${safeSession}'`, '/dev/null'], {
-          env: { ...process.env, TERM: 'xterm-256color', COLUMNS: String(cols), LINES: String(rows) }
-        })
-      }
+      cmd = 'tmux'
+      args = ['attach-session', '-t', sessionName]
     }
 
+    const proc = pty.spawn(cmd, args, {
+      name: 'xterm-256color',
+      cols,
+      rows,
+      env: { ...process.env, TERM: 'xterm-256color' }
+    })
+
     tmuxProc = proc
-    console.log(`[terminal] Attached to ${sessionName} (PID ${proc.pid})${backend.dockerEnabled ? ' [docker]' : ''}`)
+    console.log(`[terminal] Attached to ${sessionName} (PID ${proc.pid}, ${cols}x${rows})${isDocker ? ' [docker]' : ''}`)
 
-    proc.stdout.on('data', (data) => {
-      socket.emit('output', data.toString('binary'))
-    })
-
-    proc.stderr.on('data', (data) => {
-      socket.emit('output', data.toString('binary'))
-    })
-
-    proc.on('exit', (code) => {
-      console.log(`[terminal] tmux attach exited (code ${code})`)
-      socket.emit('exit', { code })
+    proc.onData((d) => socket.emit('output', d))
+    proc.onExit(({ exitCode }) => {
+      console.log(`[terminal] tmux attach exited (code ${exitCode})`)
+      socket.emit('exit', { code: exitCode })
       tmuxProc = null
     })
+
+    currentSession = sessionName
+    currentTeam = teamName
+
+    // Force tmux to resize after attach (belt and suspenders with COLUMNS/LINES)
+    if (isDocker) {
+      setTimeout(() => {
+        try {
+          const container = backend._containerName(teamName)
+          execSync(`docker exec ${container} tmux resize-window -t '${safeSession}' -x ${cols} -y ${rows}`, { timeout: 3000 })
+        } catch { /* ignore */ }
+      }, 500)
+    }
 
     socket.emit('attached', { sessionName })
   })
 
   socket.on('input', (data) => {
-    if (tmuxProc && tmuxProc.stdin.writable) {
-      tmuxProc.stdin.write(data)
+    if (tmuxProc) {
+      tmuxProc.write(data)
     }
   })
 
   socket.on('resize', (data) => {
-    // Resize the tmux pane
-    if (data.cols && data.rows) {
+    if (data.cols && data.rows && tmuxProc) {
       try {
-        // This resizes the current tmux client
-        // Since we're attached, it should respect window size
+        const c = parseInt(data.cols) - 1  // -1 to prevent right-edge clipping
+        const r = parseInt(data.rows)
+        tmuxProc.resize(c, r)
+        // Also resize tmux window inside Docker container
+        if (currentTeam && backend.dockerEnabled) {
+          const container = backend._containerName(currentTeam)
+          const safeSession = currentSession.replace(/'/g, "'\\''")
+          execSync(`docker exec ${container} tmux resize-window -t '${safeSession}' -x ${c} -y ${r}`, { timeout: 3000 })
+        }
       } catch { /* ignore */ }
     }
   })

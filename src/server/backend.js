@@ -36,7 +36,10 @@ export class AgentTeamsBackend {
         `docker inspect -f '{{.State.Running}}' ${JSON.stringify(name)} 2>/dev/null`,
         { encoding: 'utf-8' }
       ).trim()
-      if (state === 'true') return
+      if (state === 'true') {
+        this._ensureContainerOnboarding(name)
+        return
+      }
     } catch { /* container doesn't exist */ }
 
     // Remove stopped container if exists
@@ -47,6 +50,7 @@ export class AgentTeamsBackend {
       'docker', 'run', '-d',
       '--name', name,
       '-v', `${this.claudeAuthDir}:/home/agent/.claude`,
+      '-v', `${join(homedir(), '.claude.json')}:/home/agent/.claude.json`,
       '-e', 'NPM_CONFIG_IGNORE_SCRIPTS=true',
       '-e', 'NPM_CONFIG_AUDIT_LEVEL=critical',
       '-e', 'CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1',
@@ -65,6 +69,15 @@ export class AgentTeamsBackend {
 
     execSync(args.map(a => a.includes(' ') ? JSON.stringify(a) : a).join(' '))
     console.log(`[docker] Started container: ${name}`)
+    this._ensureContainerOnboarding(name)
+  }
+
+  // Copy host's .claude.json into container so Claude Code skips onboarding/theme picker
+  _ensureContainerOnboarding(containerName) {
+    try {
+      const hostFile = join(homedir(), '.claude.json')
+      execSync(`docker cp ${JSON.stringify(hostFile)} ${JSON.stringify(containerName + ':/home/agent/.claude.json')}`, { timeout: 5000 })
+    } catch { /* ignore */ }
   }
 
   stopContainer(teamName) {

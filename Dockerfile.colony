@@ -1,9 +1,14 @@
 FROM ubuntu:24.04
 
-# System deps
+# System deps + locale support for Unicode box-drawing characters
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    tmux curl git ca-certificates nodejs npm \
-    && rm -rf /var/lib/apt/lists/*
+    tmux curl git ca-certificates nodejs npm locales \
+    && rm -rf /var/lib/apt/lists/* \
+    && sed -i '/en_US.UTF-8/s/^# //g' /etc/locale.gen \
+    && locale-gen
+
+ENV LANG=en_US.UTF-8
+ENV LC_ALL=en_US.UTF-8
 
 # Install Claude Code CLI
 RUN npm install -g @anthropic-ai/claude-code
@@ -22,6 +27,10 @@ ENV PIP_NO_CACHE_DIR=true
 # ~/.claude/settings.json mounted read-only from host
 
 USER agent
+
+# Pre-complete Claude Code onboarding so theme picker doesn't appear in terminal
+RUN echo '{"hasCompletedOnboarding":true,"theme":"dark"}' > /home/agent/.claude.json
+
 WORKDIR /workspace
 
 # Keep container alive (tmux sessions run inside)
