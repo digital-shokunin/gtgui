@@ -2716,17 +2716,6 @@ export class UIScene extends Phaser.Scene {
       ease: 'Back.easeOut'
     })
 
-    // Start Emperor session on first open
-    if (!this._emperorStarted) {
-      this._emperorStarted = true
-      this.api.startEmperor().then(() => {
-        // Open SSE stream for Emperor output
-        this._openEmperorStream()
-      }).catch(e => {
-        this.addEmperorMessage('emperor', `Failed to start Emperor: ${e.message}`)
-      })
-    }
-
     // Create DOM input for chat
     if (!this.chatInput) {
       this.chatInput = document.createElement('input')
@@ -2763,43 +2752,6 @@ export class UIScene extends Phaser.Scene {
     this.chatInput.focus()
   }
 
-  _openEmperorStream() {
-    if (this._emperorEventSource) return
-    this._emperorStreamBuffer = ''
-    this._emperorStreamFlushTimer = null
-    this._emperorEventSource = this.api.openEmperorStream()
-    this._emperorEventSource.onmessage = (event) => {
-      try {
-        const data = JSON.parse(event.data)
-        if (data.type === 'text_delta') {
-          this._emperorStreamBuffer += (data.content || data.text || '')
-          // Flush after 300ms idle to batch rapid deltas
-          clearTimeout(this._emperorStreamFlushTimer)
-          this._emperorStreamFlushTimer = setTimeout(() => this._flushEmperorStreamText(), 300)
-        } else if (data.type === 'tool_progress') {
-          this._flushEmperorStreamText()
-          this.addEmperorMessage('system', `[Using ${data.tool}...]`)
-        } else if (data.type === 'result' && data.cost) {
-          this._flushEmperorStreamText()
-          this.addEmperorMessage('system', `Cost: $${data.cost.costUsd.toFixed(4)}`)
-        } else if (data.content) {
-          // Backward compat: plain content messages
-          this.addEmperorMessage('emperor', data.content)
-        }
-      } catch { /* ignore parse errors */ }
-    }
-    this._emperorEventSource.onerror = () => {
-      // SSE reconnects automatically, no action needed
-    }
-  }
-
-  _flushEmperorStreamText() {
-    if (this._emperorStreamBuffer) {
-      this.addEmperorMessage('emperor', this._emperorStreamBuffer)
-      this._emperorStreamBuffer = ''
-    }
-  }
-
   closeEmperorChat() {
     this.tweens.add({
       targets: this.emperorChat,
@@ -2813,7 +2765,7 @@ export class UIScene extends Phaser.Scene {
     if (this.chatInput) {
       this.chatInput.style.display = 'none'
     }
-    // Keep Emperor session running (persist) — don't close SSE
+    // Panel hidden but state preserved
   }
 
   addEmperorMessage(sender, text) {
