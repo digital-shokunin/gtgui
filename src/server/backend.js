@@ -15,6 +15,7 @@ export class AgentTeamsBackend {
     this.dockerImage = config.dockerImage || 'colony-sandbox'
     this.claudeAuthDir = config.claudeAuthDir || join(homedir(), '.claude')
     this.projectsRoot = config.projectsRoot || '/workspace'
+    this.hostProjectsDir = config.hostProjectsDir || join(homedir(), 'projects')
     // Auto-detect resource limits from host if not explicitly configured
     const detectedLimits = AgentTeamsBackend._detectResourceLimits()
     this.containerMemory = config.containerMemory || detectedLimits.memory
@@ -63,12 +64,18 @@ export class AgentTeamsBackend {
     // Remove stopped container if exists
     try { execSync(`docker rm -f ${JSON.stringify(name)} 2>/dev/null`) } catch {}
 
+    // Create persistent host project directory
+    const hostProjectDir = join(this.hostProjectsDir, teamName)
+    mkdirSync(hostProjectDir, { recursive: true })
+    const containerProjectDir = `/workspace/${teamName}`
+
     // Build docker run args
     const args = [
       'docker', 'run', '-d',
       '--name', name,
       '-v', `${this.claudeAuthDir}:/home/claude/.claude`,
       '-v', `${join(homedir(), '.claude.json')}:/home/claude/.claude.json`,
+      '-v', `${hostProjectDir}:${containerProjectDir}`,
       '-e', 'NPM_CONFIG_IGNORE_SCRIPTS=true',
       '-e', 'NPM_CONFIG_AUDIT_LEVEL=critical',
       '-e', 'CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1',
@@ -189,7 +196,9 @@ export class AgentTeamsBackend {
     const safeCmd = fullCmd.replace(/'/g, "'\\''")
     // Session auto-destroys when claude exits (no lingering shell)
     // Use ; for set-option so failures don't abort the spawn (defaults are already off)
-    const tmuxCmds = `tmux new-session -d -s '${safeSession}' '${safeCmd}'; tmux set-option -t '${safeSession}' remain-on-exit off 2>/dev/null; tmux set-option -t '${safeSession}' destroy-unattached off 2>/dev/null`
+    // When Docker is enabled, start in the project-specific directory for conversation isolation
+    const cwdFlag = (this.dockerEnabled && teamName) ? ` -c '/workspace/${teamName}'` : ''
+    const tmuxCmds = `tmux new-session -d -s '${safeSession}'${cwdFlag} '${safeCmd}'; tmux set-option -t '${safeSession}' remain-on-exit off 2>/dev/null; tmux set-option -t '${safeSession}' destroy-unattached off 2>/dev/null`
 
     if (this.dockerEnabled && teamName) {
       this.ensureContainer(teamName)
@@ -738,7 +747,8 @@ export class AgentTeamsBackend {
     const fullCmd = `${envPrefix} ${claudeCmd}`
     const safeSession = tmuxName.replace(/'/g, "'\\''")
     const safeCmd = fullCmd.replace(/'/g, "'\\''")
-    const tmuxCmds = `tmux new-session -d -s '${safeSession}' '${safeCmd}'; tmux set-option -t '${safeSession}' remain-on-exit off 2>/dev/null; tmux set-option -t '${safeSession}' destroy-unattached off 2>/dev/null`
+    const cwdFlag = this.dockerEnabled ? ` -c '/workspace/${teamName}'` : ''
+    const tmuxCmds = `tmux new-session -d -s '${safeSession}'${cwdFlag} '${safeCmd}'; tmux set-option -t '${safeSession}' remain-on-exit off 2>/dev/null; tmux set-option -t '${safeSession}' destroy-unattached off 2>/dev/null`
 
     if (this.dockerEnabled) {
       this.ensureContainer(teamName)
