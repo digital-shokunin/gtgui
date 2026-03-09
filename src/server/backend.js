@@ -49,8 +49,8 @@ export class AgentTeamsBackend {
     const args = [
       'docker', 'run', '-d',
       '--name', name,
-      '-v', `${this.claudeAuthDir}:/home/agent/.claude`,
-      '-v', `${join(homedir(), '.claude.json')}:/home/agent/.claude.json`,
+      '-v', `${this.claudeAuthDir}:/home/claude/.claude`,
+      '-v', `${join(homedir(), '.claude.json')}:/home/claude/.claude.json`,
       '-e', 'NPM_CONFIG_IGNORE_SCRIPTS=true',
       '-e', 'NPM_CONFIG_AUDIT_LEVEL=critical',
       '-e', 'CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1',
@@ -76,7 +76,7 @@ export class AgentTeamsBackend {
   _ensureContainerOnboarding(containerName) {
     try {
       const hostFile = join(homedir(), '.claude.json')
-      execSync(`docker cp ${JSON.stringify(hostFile)} ${JSON.stringify(containerName + ':/home/agent/.claude.json')}`, { timeout: 5000 })
+      execSync(`docker cp ${JSON.stringify(hostFile)} ${JSON.stringify(containerName + ':/home/claude/.claude.json')}`, { timeout: 5000 })
     } catch { /* ignore */ }
   }
 

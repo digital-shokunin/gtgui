@@ -13,9 +13,9 @@ ENV LC_ALL=en_US.UTF-8
 # Install Claude Code CLI
 RUN npm install -g @anthropic-ai/claude-code
 
-# Create non-root agent user with uid 1000 to match host claude user
+# Create non-root claude user with uid 1000 to match host claude user
 # This ensures mounted .claude files (credentials, settings, skills) are readable
-RUN userdel -r ubuntu 2>/dev/null; useradd -m -s /bin/bash -u 1000 agent
+RUN userdel -r ubuntu 2>/dev/null; useradd -m -s /bin/bash -u 1000 claude
 
 # Supply chain hardening (Trail of Bits)
 ENV NPM_CONFIG_IGNORE_SCRIPTS=true
@@ -26,10 +26,12 @@ ENV PIP_NO_CACHE_DIR=true
 # Deny sensitive paths via Claude config (applied at runtime via mount)
 # ~/.claude/settings.json mounted read-only from host
 
-USER agent
+RUN mkdir /workspace && chown claude:claude /workspace
+
+USER claude
 
 # Pre-complete Claude Code onboarding so theme picker doesn't appear in terminal
-RUN echo '{"hasCompletedOnboarding":true,"theme":"dark"}' > /home/agent/.claude.json
+RUN echo '{"hasCompletedOnboarding":true,"theme":"dark"}' > /home/claude/.claude.json
 
 WORKDIR /workspace
 
