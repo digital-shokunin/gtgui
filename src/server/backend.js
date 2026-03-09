@@ -1,5 +1,5 @@
 import { join } from 'path'
-import { homedir } from 'os'
+import { homedir, totalmem, cpus as osCpus } from 'os'
 import {
   readdirSync, readFileSync, writeFileSync, mkdirSync, existsSync,
   rmSync, statSync, unlinkSync, openSync, closeSync
@@ -15,9 +15,27 @@ export class AgentTeamsBackend {
     this.dockerImage = config.dockerImage || 'colony-sandbox'
     this.claudeAuthDir = config.claudeAuthDir || join(homedir(), '.claude')
     this.projectsRoot = config.projectsRoot || '/workspace'
-    this.containerMemory = config.containerMemory || '4g'
-    this.containerCpus = config.containerCpus || '2'
+    // Auto-detect resource limits from host if not explicitly configured
+    const detectedLimits = AgentTeamsBackend._detectResourceLimits()
+    this.containerMemory = config.containerMemory || detectedLimits.memory
+    this.containerCpus = config.containerCpus || detectedLimits.cpus
     this.networkIsolation = config.networkIsolation ?? false
+  }
+
+  // Detect host resources and compute per-container limits
+  // Reserves 512MB for OS/Express, splits the rest across max 4 containers
+  static _detectResourceLimits() {
+    const totalMB = Math.floor(totalmem() / (1024 * 1024))
+    const numCpus = osCpus().length
+    const reservedMB = 512
+    const maxContainers = 4
+    const perContainerMB = Math.max(256, Math.floor((totalMB - reservedMB) / maxContainers))
+    const perContainerCpus = Math.max(0.25, Math.min(numCpus, numCpus / maxContainers))
+    console.log(`[docker] Host: ${totalMB}MB RAM, ${numCpus} CPUs → per-container: ${perContainerMB}MB, ${perContainerCpus} CPUs`)
+    return {
+      memory: `${perContainerMB}m`,
+      cpus: String(perContainerCpus)
+    }
   }
 
   // ===== DOCKER CONTAINER LIFECYCLE =====

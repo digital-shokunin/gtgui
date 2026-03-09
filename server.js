@@ -75,8 +75,8 @@ const DEFAULT_SETTINGS = {
   emperorName: 'Tiberius Claudius',  // Default Emperor name — user can change
   dockerEnabled: false,              // Toggle Docker sandboxing per team
   dockerImage: 'colony-sandbox',     // Docker image for agent containers
-  containerMemory: '4g',             // Memory limit per container
-  containerCpus: '2',                // CPU limit per container
+  containerMemory: '',                // Memory limit per container (blank = auto-detect)
+  containerCpus: '',                  // CPU limit per container (blank = auto-detect)
   networkIsolation: false            // If true, containers have no network access
 }
 
@@ -230,8 +230,8 @@ const backend = new AgentTeamsBackend({
   tasksRoot: process.env.TASKS_ROOT,
   dockerEnabled: currentSettings.dockerEnabled || false,
   dockerImage: currentSettings.dockerImage || 'colony-sandbox',
-  containerMemory: currentSettings.containerMemory || '4g',
-  containerCpus: currentSettings.containerCpus || '2',
+  containerMemory: currentSettings.containerMemory || '',
+  containerCpus: currentSettings.containerCpus || '',
   networkIsolation: currentSettings.networkIsolation || false,
 })
 
@@ -864,8 +864,8 @@ app.post('/api/settings', (req, res) => {
     // Propagate Docker settings changes to backend
     backend.dockerEnabled = currentSettings.dockerEnabled || false
     backend.dockerImage = currentSettings.dockerImage || 'colony-sandbox'
-    backend.containerMemory = currentSettings.containerMemory || '4g'
-    backend.containerCpus = currentSettings.containerCpus || '2'
+    backend.containerMemory = currentSettings.containerMemory || ''
+    backend.containerCpus = currentSettings.containerCpus || ''
     backend.networkIsolation = currentSettings.networkIsolation || false
     multiplayer.broadcastStateUpdate({ event: 'settings:updated', settings: currentSettings })
     res.json({ success: true, settings: currentSettings })
