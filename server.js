@@ -32,7 +32,7 @@ app.use(sessionMiddleware)
 const { users: authUsers } = setupAuth(app)
 
 // Require auth on all API routes except public ones
-const PUBLIC_API = ['/config', '/me', '/github/webhook']
+const PUBLIC_API = ['/config', '/me', '/github/webhook', '/status']
 app.use('/api', (req, res, next) => {
   if (PUBLIC_API.includes(req.path)) return next()
   requireAuth(req, res, next)

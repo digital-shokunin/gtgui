@@ -2608,6 +2608,9 @@ export class UIScene extends Phaser.Scene {
     bg.lineStyle(3, 0x8B4513, 1)
     bg.strokeRoundedRect(0, 0, panelWidth, panelHeight, 20)
 
+    // Click blocker — absorbs clicks so they don't reach icons behind the panel
+    const blocker = this.add.zone(panelWidth / 2, panelHeight / 2, panelWidth, panelHeight).setInteractive()
+
     // Emperor avatar
     const avatarBg = this.add.graphics()
     avatarBg.fillStyle(0xFFFFFF, 1)
@@ -2683,7 +2686,7 @@ export class UIScene extends Phaser.Scene {
     const sendZone = this.add.zone(panelWidth - 36, panelHeight - 42, 48, 45).setInteractive({ useHandCursor: true })
     sendZone.on('pointerdown', () => this.sendEmperorMessage())
 
-    this.emperorChat.add([bg, avatarBg, emperorAvatar, title, subtitle, closeBtn, closeX, closeZone,
+    this.emperorChat.add([bg, blocker, avatarBg, emperorAvatar, title, subtitle, closeBtn, closeX, closeZone,
                         chatBg, this.chatMessages, inputBg, sendBtn, sendText, sendZone])
 
     // Add welcome message

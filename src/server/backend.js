@@ -337,7 +337,7 @@ export class AgentTeamsBackend {
     mkdirSync(teamDir, { recursive: true })
     mkdirSync(taskDir, { recursive: true })
 
-    const config = { members: [] }
+    const config = {}
     writeFileSync(join(teamDir, 'config.json'), JSON.stringify(config, null, 2))
 
     // Start Docker container for this team if enabled
@@ -352,9 +352,9 @@ export class AgentTeamsBackend {
 
     // Kill all tmux sessions for this team
     try {
-      const members = this.getTeammates(teamName)
-      for (const m of members) {
-        this.stopTeammate(teamName, m.name)
+      const sessionMap = this._getSessionMap(teamName)
+      for (const name of Object.keys(sessionMap)) {
+        this.stopTeammate(teamName, name)
       }
     } catch { /* ignore cleanup errors */ }
 
@@ -368,18 +368,16 @@ export class AgentTeamsBackend {
   // ===== TEAMMATE MANAGEMENT =====
 
   getTeammates(teamName) {
-    const config = this.getTeamConfig(teamName)
-    if (!config?.members) return []
+    const sessionMap = this._getSessionMap(teamName)
+    if (Object.keys(sessionMap).length === 0) return []
 
     const tasks = this.getTasksForTeam(teamName)
-    const sessionMap = this._getSessionMap(teamName)
     const liveSessions = this.listTmuxSessions(teamName)
 
-    return config.members.map(member => {
-      const sInfo = sessionMap[member.name] || {}
-      const tmuxName = sInfo.tmuxSession || this._tmuxName(teamName, member.name)
+    return Object.entries(sessionMap).map(([name, sInfo]) => {
+      const tmuxName = sInfo.tmuxSession || this._tmuxName(teamName, name)
       const alive = liveSessions.includes(tmuxName)
-      const inProgressTask = tasks.find(t => t.owner === member.name && t.status === 'in_progress')
+      const inProgressTask = tasks.find(t => t.owner === name && t.status === 'in_progress')
 
       let status = 'idle'
       let issue = null
@@ -405,10 +403,10 @@ export class AgentTeamsBackend {
       }
 
       return {
-        name: member.name,
+        name,
         rig: teamName,
-        agentId: member.agentId || null,
-        agentType: member.agentType || 'general-purpose',
+        agentId: sInfo.agentId || null,
+        agentType: sInfo.agentType || 'general-purpose',
         status,
         issue,
         assignedAt,
@@ -437,21 +435,12 @@ export class AgentTeamsBackend {
       this.killTmuxSession(tmuxName, { teamName })
     }
 
-    // Register in team config
-    const config = this.getTeamConfig(teamName) || { members: [] }
-    if (!config.members.find(m => m.name === name)) {
-      config.members.push({
-        name,
-        agentId: `${teamName}-${name}-${Date.now()}`,
-        agentType: 'general-purpose'
-      })
-      writeFileSync(join(teamDir, 'config.json'), JSON.stringify(config, null, 2))
-    }
-
-    // Record in session map
+    // Record in session map (single source of truth)
     const map = this._getSessionMap(teamName)
     map[name] = {
       tmuxSession: tmuxName,
+      agentId: map[name]?.agentId || `${teamName}-${name}-${Date.now()}`,
+      agentType: map[name]?.agentType || 'general-purpose',
       claudeSessionId: map[name]?.claudeSessionId || null,
       startedAt: new Date().toISOString(),
       alive: false  // Not yet spawned a tmux session — will be set true when work starts
@@ -471,15 +460,11 @@ export class AgentTeamsBackend {
     return this.isTmuxSessionAlive(tmuxName, { teamName })
   }
 
-  // Remove teammate from team config (does not kill session)
+  // Remove teammate from session map (does not kill session)
   removeTeammate(teamName, name) {
-    const teamDir = join(this.teamsRoot, teamName)
-    const configPath = join(teamDir, 'config.json')
-    const config = this.getTeamConfig(teamName)
-    if (!config) return
-
-    config.members = config.members.filter(m => m.name !== name)
-    writeFileSync(configPath, JSON.stringify(config, null, 2))
+    const sessionMap = this._getSessionMap(teamName)
+    delete sessionMap[name]
+    this._saveSessionMap(teamName, sessionMap)
   }
 
   // Fully dismiss a teammate: kill tmux, fail tasks, remove from config + session map
@@ -499,13 +484,10 @@ export class AgentTeamsBackend {
       }
     }
 
-    // Remove from session map
+    // Remove from session map (single source of truth)
     const sessionMap = this._getSessionMap(teamName)
     delete sessionMap[name]
     this._saveSessionMap(teamName, sessionMap)
-
-    // Remove from team config
-    this.removeTeammate(teamName, name)
 
     return true
   }
@@ -748,26 +730,16 @@ export class AgentTeamsBackend {
     }
     console.log(`[tmux] Started Emperor session: ${tmuxName}`)
 
-    // Record in session map
+    // Record in session map (single source of truth)
     sessionMap.emperor = {
       ...sInfo,
       tmuxSession: tmuxName,
+      agentId: sInfo.agentId || `${teamName}-emperor-${Date.now()}`,
+      agentType: 'emperor',
       startedAt: new Date().toISOString(),
       alive: true
     }
     this._saveSessionMap(teamName, sessionMap)
-
-    // Register emperor in team config if not present
-    const config = this.getTeamConfig(teamName) || { members: [] }
-    if (!config.members.find(m => m.name === 'emperor')) {
-      config.members.push({
-        name: 'emperor',
-        agentId: `${teamName}-emperor-${Date.now()}`,
-        agentType: 'emperor'
-      })
-      const teamDir = join(this.teamsRoot, teamName)
-      writeFileSync(join(teamDir, 'config.json'), JSON.stringify(config, null, 2))
-    }
 
     return true
   }
@@ -788,8 +760,8 @@ export class AgentTeamsBackend {
       // First message includes context
       const teams = this.listTeams()
       const teamSummary = teams.map(t => {
-        const config = this.getTeamConfig(t.name)
-        const members = config?.members?.map(m => m.name).join(', ') || 'none'
+        const sm = this._getSessionMap(t.name)
+        const members = Object.keys(sm).join(', ') || 'none'
         return `  - ${t.name}: members=[${members}]`
       }).join('\n')
 
