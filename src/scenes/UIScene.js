@@ -2644,7 +2644,7 @@ export class UIScene extends Phaser.Scene {
       fill: '#FFFFFF'
     }).setOrigin(0.5)
     const closeZone = this.add.zone(panelWidth - 25, 25, 28, 28).setInteractive({ useHandCursor: true })
-    closeZone.on('pointerdown', () => this.closeEmperorChat())
+    closeZone.on('pointerup', () => this.closeEmperorChat())
 
     // Chat history area
     const chatBg = this.add.graphics()
