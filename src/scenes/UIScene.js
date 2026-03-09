@@ -2657,19 +2657,14 @@ export class UIScene extends Phaser.Scene {
     this.chatScrollY = 0
     this.chatContentHeight = 0
 
-    // Overflow covers — hide messages that scroll outside the chat area
-    // These are container children so they move with the panel automatically
+    // Clip mask — standalone GeometryMask synced to container position during animation
     const chatAreaH = panelHeight - 150
     this._chatAreaH = chatAreaH
-    const overflowCover = this.add.graphics()
-    // Cover above chat area (header region)
-    overflowCover.fillStyle(0x8B4513, 1)
-    overflowCover.fillRect(0, 0, panelWidth, 75)
-    // Cover below chat area (input region)
-    overflowCover.fillStyle(0xFFFFFF, 0.98)
-    overflowCover.fillRect(0, 75 + chatAreaH, panelWidth, panelHeight - 75 - chatAreaH)
-    // Bottom rounded corners
-    overflowCover.fillRoundedRect(0, panelHeight - 20, panelWidth, 20, { tl: 0, tr: 0, bl: 20, br: 20 })
+    this._chatPanelWidth = panelWidth
+    this._chatMaskGfx = this.make.graphics()
+    this._chatMaskGfx.fillStyle(0xffffff)
+    this._chatMaskGfx.fillRect(0, 0, panelWidth - 24, chatAreaH)
+    this.chatMessages.setMask(this._chatMaskGfx.createGeometryMask())
 
     // Input area background
     const inputBg = this.add.graphics()
@@ -2688,9 +2683,8 @@ export class UIScene extends Phaser.Scene {
     const sendZone = this.add.zone(panelWidth - 36, panelHeight - 42, 48, 45).setInteractive({ useHandCursor: true })
     sendZone.on('pointerdown', () => this.sendEmperorMessage())
 
-    this.emperorChat.add([bg, blocker, chatBg, this.chatMessages, overflowCover,
-                        avatarBg, emperorAvatar, title, subtitle, closeBtn, closeX, closeZone,
-                        inputBg, sendBtn, sendText, sendZone])
+    this.emperorChat.add([bg, blocker, avatarBg, emperorAvatar, title, subtitle, closeBtn, closeX, closeZone,
+                        chatBg, this.chatMessages, inputBg, sendBtn, sendText, sendZone])
 
     // Add welcome message
     this.addEmperorMessage("emperor", "Welcome to Penguin Colony! I'm the Emperor. I can help you:\n\n\u2022 Create new projects\n\u2022 Clone repos\n\u2022 Describe what you need built - I'll create tasks!\n\u2022 Assign issue numbers or full specs\n\nJust tell me what you need!")
@@ -2713,7 +2707,9 @@ export class UIScene extends Phaser.Scene {
       x: finalX,
       alpha: 1,
       duration: 300,
-      ease: 'Back.easeOut'
+      ease: 'Back.easeOut',
+      onUpdate: () => this._syncChatMask(),
+      onComplete: () => this._syncChatMask()
     })
 
     // Create DOM input for chat
@@ -2759,6 +2755,7 @@ export class UIScene extends Phaser.Scene {
       alpha: 0,
       duration: 200,
       ease: 'Back.easeIn',
+      onUpdate: () => this._syncChatMask(),
       onComplete: () => this.emperorChat.setVisible(false)
     })
 
@@ -2766,6 +2763,12 @@ export class UIScene extends Phaser.Scene {
       this.chatInput.style.display = 'none'
     }
     // Panel hidden but state preserved
+  }
+
+  _syncChatMask() {
+    if (this._chatMaskGfx && this.emperorChat) {
+      this._chatMaskGfx.setPosition(this.emperorChat.x + 12, 70 + 75)
+    }
   }
 
   addEmperorMessage(sender, text) {

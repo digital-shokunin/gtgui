@@ -739,7 +739,7 @@ export class GameScene extends Phaser.Scene {
     const offsetY = Phaser.Math.Between(-2, 2)
 
     const unit = this.addUnit(
-      `polecat-${polecatName}`,
+      `polecat-${colonyName}-${polecatName}`,
       polecatName,
       colony.centerX + offsetX,
       colony.centerY + offsetY,
@@ -821,7 +821,7 @@ export class GameScene extends Phaser.Scene {
           colony.polecats.push(pc.name)
         }
 
-        this.addUnit(`polecat-${pc.name}`, pc.name, gridX, gridY, status, pc.status)
+        this.addUnit(`polecat-${pc.rig}-${pc.name}`, pc.name, gridX, gridY, status, pc.status)
       })
     }
 
@@ -1196,7 +1196,7 @@ export class GameScene extends Phaser.Scene {
       // Filter emperor — it has its own dedicated sprite at the HQ
       if (state.polecats) {
         state.polecats.filter(pc => pc.name !== 'emperor').forEach(pc => {
-          const unitKey = `polecat-${pc.name}`
+          const unitKey = `polecat-${pc.rig}-${pc.name}`
 
           // Skip polecats that were eaten by sea lion (stuck + already animated)
           if (this.eatenPolecats.has(unitKey)) {
