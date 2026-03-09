@@ -2690,7 +2690,7 @@ export class UIScene extends Phaser.Scene {
                         chatBg, this.chatMessages, inputBg, sendBtn, sendText, sendZone])
 
     // Add welcome message
-    this.addEmperorMessage("emperor", "Welcome to Penguin Colony! I'm the Emperor. I can help you:\n\n• Create new projects\n• Clone repos\n• Describe what you need built - I'll create tasks!\n• Assign issue numbers or full specs\n\nJust tell me what you need!")
+    this.addEmperorMessage("emperor", "Welcome to Penguin Colony! I'm the Emperor. I can help you:\n\n\u2022 Create new projects\n\u2022 Clone repos\n\u2022 Describe what you need built - I'll create tasks!\n\u2022 Assign issue numbers or full specs\n\nJust tell me what you need!")
   }
 
   openEmperorChat() {
@@ -2711,12 +2711,12 @@ export class UIScene extends Phaser.Scene {
       alpha: 1,
       duration: 300,
       ease: 'Back.easeOut',
-      onComplete: () => {
-        // Reposition chat mask to match final panel position
+      onUpdate: () => {
+        // Keep mask in sync with panel position during animation
         if (this._chatMaskShape) {
           this._chatMaskShape.clear()
           this._chatMaskShape.fillStyle(0xffffff)
-          this._chatMaskShape.fillRect(finalX + 12, 70 + 75, 336, this._chatAreaH)
+          this._chatMaskShape.fillRect(this.emperorChat.x + 12, 70 + 75, 336, this._chatAreaH)
         }
       }
     })
@@ -3040,6 +3040,45 @@ export class UIScene extends Phaser.Scene {
       return
     }
 
+    if (this.emperorState === 'awaiting_project_for_task') {
+      const name = text.replace(/[^a-zA-Z0-9_]/g, '_').toLowerCase()
+      // Verify project exists
+      try {
+        const rigs = await this.api.getRigs()
+        const match = rigs.find(r => r.name === name)
+        if (match) {
+          this.currentProject = name
+          this.emperorState = null
+          this.addEmperorMessage('emperor', `Using project "${name}"...`)
+          // Continue the auto-assign flow
+          const polecats = await this.api.getPolecats(name)
+          const idlePolecat = polecats.find(p => p.status === 'idle')
+          if (idlePolecat) {
+            this.currentPolecat = idlePolecat.name
+            this.addEmperorMessage('emperor', `Found idle agent: ${idlePolecat.name}`)
+          } else if (polecats.length === 0) {
+            this.addEmperorMessage('emperor', `No agents yet - spawning one...`)
+            const result = await this.api.spawnPolecat(name)
+            if (this.gameScene) this.gameScene.addPolecatToColony(name, result.name)
+            this.currentPolecat = result.name
+          } else {
+            this.addEmperorMessage('emperor', `All ${polecats.length} agents busy - spawning another...`)
+            const result = await this.api.spawnPolecat(name)
+            if (this.gameScene) this.gameScene.addPolecatToColony(name, result.name)
+            this.currentPolecat = result.name
+          }
+          await this.slingSpecToPolecat()
+        } else {
+          this.addEmperorMessage('emperor', `Project "${name}" not found. Try again or say "new project" to create one.`)
+        }
+      } catch (e) {
+        this.addEmperorMessage('emperor', `Error: ${e.message}`)
+        this.emperorState = null
+        this.pendingSpec = null
+      }
+      return
+    }
+
     // Default response
     this.addEmperorMessage('emperor', "I'm not sure what you mean. Try 'help' to see what I can do!")
     this.emperorState = null
@@ -3125,7 +3164,11 @@ export class UIScene extends Phaser.Scene {
       if (this.currentProject && projects.find(p => p.name === this.currentProject)) {
         // Keep current project
       } else {
-        this.currentProject = projects[projects.length - 1].name
+        // Ask the user which project to use
+        const list = projects.map(p => `• ${p.name}`).join('\n')
+        this.addEmperorMessage('emperor', `Which project should I assign this to?\n\n${list}\n\nJust type the project name.`)
+        this.emperorState = 'awaiting_project_for_task'
+        return
       }
     }
 
