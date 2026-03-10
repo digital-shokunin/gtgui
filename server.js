@@ -17,8 +17,13 @@ const app = express()
 app.set('trust proxy', 1)
 const httpServer = createServer(app)
 
+// CORS: restrict origins in production, allow all in dev
+const ALLOWED_ORIGINS = process.env.ALLOWED_ORIGINS
+  ? process.env.ALLOWED_ORIGINS.split(',').map(o => o.trim())
+  : (DEV_MODE ? true : false)  // false = same-origin only when not configured
+
 app.use(cors({
-  origin: true,
+  origin: ALLOWED_ORIGINS,
   credentials: true
 }))
 
@@ -341,6 +346,10 @@ setInterval(checkStuckTeammates, 30000)
 // Also handles legacy "teamName/polecats/memberName" for backwards compat
 function parseAgentId(agentId) {
   const parts = agentId.split('/')
+  // Validate all parts are safe (alphanumeric + underscores only) to prevent path traversal
+  if (!parts.every(p => SAFE_NAME.test(p))) {
+    return { teamName: null, memberName: null, invalid: true }
+  }
   if (parts.length >= 3 && parts[1] === 'polecats') {
     // Legacy format: rig/polecats/name
     return { teamName: parts[0], memberName: parts[2] }
@@ -359,6 +368,20 @@ function parseAgentId(agentId) {
     return { teamName: null, memberName: name }
   }
 }
+
+// ===== INPUT VALIDATION =====
+const SAFE_NAME = /^[a-zA-Z0-9_]+$/
+
+// Validate :name params (team names, template IDs, etc.) — block path traversal
+app.param('name', (req, res, next, value) => {
+  if (!SAFE_NAME.test(value)) {
+    return res.status(400).json({ error: 'Invalid name — alphanumeric and underscores only' })
+  }
+  next()
+})
+
+// Validate agent IDs in parseAgentId (used by /api/agents/:id routes)
+// Task queue, PR, and template :id params allow hyphens (in-memory, no path risk)
 
 // ===== API ENDPOINTS =====
 
@@ -1725,7 +1748,7 @@ terminalNs.on('connection', (socket) => {
 
   socket.on('attach', (data) => {
     const { sessionName } = data
-    if (!sessionName || !/^colony_/.test(sessionName)) {
+    if (!sessionName || !/^colony_[a-zA-Z0-9_]+$/.test(sessionName)) {
       socket.emit('error', { message: 'Invalid session name' })
       return
     }

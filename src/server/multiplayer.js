@@ -13,10 +13,15 @@ const USER_COLORS = [
 
 export class MultiplayerServer {
   constructor(httpServer, sessionMiddleware) {
+    const allowedOrigins = process.env.ALLOWED_ORIGINS
+      ? process.env.ALLOWED_ORIGINS.split(',').map(o => o.trim())
+      : (DEV_MODE ? '*' : false)
+
     this.io = new Server(httpServer, {
       cors: {
-        origin: '*',
-        methods: ['GET', 'POST']
+        origin: allowedOrigins,
+        methods: ['GET', 'POST'],
+        credentials: true
       }
     })
 
