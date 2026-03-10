@@ -38,6 +38,14 @@ export class GasTownAPI {
     })
   }
 
+  // Clone a repo into a project workspace
+  async cloneRepo(rigName, repoUrl) {
+    return this.request(`/rigs/${encodeURIComponent(rigName)}/clone`, {
+      method: 'POST',
+      body: JSON.stringify({ repoUrl })
+    })
+  }
+
   // Spawn a teammate in a team
   async spawnPolecat(rigName, polecatName = null, cwd = null) {
     return this.request(`/rigs/${rigName}/polecats`, {

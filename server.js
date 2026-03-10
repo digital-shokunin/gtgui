@@ -6,7 +6,7 @@ import { dirname, join } from 'path'
 import { writeFileSync, readFileSync, mkdirSync, existsSync } from 'fs'
 import { spawn, execSync } from 'child_process'
 import pty from 'node-pty'
-import { setupAuth, getSessionMiddleware, requireAuth } from './src/server/auth.js'
+import { setupAuth, getSessionMiddleware, requireAuth, DEV_MODE } from './src/server/auth.js'
 import { MultiplayerServer } from './src/server/multiplayer.js'
 import { AgentTeamsBackend } from './src/server/backend.js'
 
@@ -365,7 +365,7 @@ function parseAgentId(agentId) {
 // GET /api/config
 app.get('/api/config', (req, res) => {
   res.json({
-    production: process.env.NODE_ENV === 'production',
+    production: !DEV_MODE,
     version: '2.0.0'
   })
 })
@@ -435,6 +435,30 @@ app.delete('/api/rigs/:name', (req, res) => {
   } catch (e) {
     console.error('Failed to delete team:', e.message)
     res.status(500).json({ error: 'Failed to delete team' })
+  }
+})
+
+// POST /api/rigs/:name/clone - Clone a repo into the project workspace
+app.post('/api/rigs/:name/clone', (req, res) => {
+  const { name } = req.params
+  const { repoUrl } = req.body
+
+  if (!repoUrl) {
+    return res.status(400).json({ error: 'repoUrl required' })
+  }
+
+  // Basic URL validation
+  if (!/^https?:\/\/.+/.test(repoUrl)) {
+    return res.status(400).json({ error: 'Invalid repo URL — must start with http(s)://' })
+  }
+
+  try {
+    backend.cloneRepo(name, repoUrl)
+    addActivityEvent('repo_cloned', { project: name, repoUrl }, req.session?.passport?.user)
+    res.json({ success: true, project: name, repoUrl })
+  } catch (e) {
+    console.error('Failed to clone repo:', e.message)
+    res.status(500).json({ error: `Clone failed: ${e.message}` })
   }
 })
 
@@ -1685,7 +1709,7 @@ terminalNs.use((socket, next) => {
 })
 terminalNs.use((socket, next) => {
   const session = socket.request.session
-  if (session?.passport?.user || process.env.NODE_ENV !== 'production') {
+  if (session?.passport?.user || DEV_MODE) {
     next()
   } else {
     console.error('[terminal] Auth rejected — no passport user in session')

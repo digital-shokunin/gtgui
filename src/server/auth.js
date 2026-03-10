@@ -1,6 +1,7 @@
 import passport from 'passport'
 import { Strategy as GitHubStrategy } from 'passport-github2'
 import session from 'express-session'
+import { randomBytes } from 'crypto'
 
 // GitHub OAuth configuration
 const GITHUB_CLIENT_ID = process.env.GITHUB_CLIENT_ID || ''
@@ -11,6 +12,9 @@ const CALLBACK_URL = process.env.CALLBACK_URL || 'http://localhost:8080/auth/git
 const ALLOWED_GITHUB_USERS = process.env.ALLOWED_GITHUB_USERS
   ? process.env.ALLOWED_GITHUB_USERS.split(',').map(u => u.trim().toLowerCase())
   : []
+
+// Dev mode must be explicitly opted in — fail closed
+export const DEV_MODE = ['development', 'dev'].includes((process.env.NODE_ENV || '').toLowerCase())
 
 // User store (in-memory for small team)
 const users = new Map()
@@ -90,10 +94,10 @@ export function setupAuth(app) {
     }
   })
 
-  // Dev mode: allow anonymous users
+  // Dev mode: allow anonymous users (only when NODE_ENV=development|dev)
   app.post('/auth/dev-login', (req, res) => {
-    if (process.env.NODE_ENV === 'production') {
-      return res.status(403).json({ error: 'Dev login not allowed in production' })
+    if (!DEV_MODE) {
+      return res.status(403).json({ error: 'Dev login not allowed' })
     }
 
     const { username } = req.body
@@ -128,13 +132,25 @@ export function requireAuth(req, res, next) {
 }
 
 export function getSessionMiddleware() {
+  let secret = process.env.SESSION_SECRET
+  if (!secret) {
+    if (DEV_MODE) {
+      secret = randomBytes(32).toString('hex')
+      console.warn('[auth] SESSION_SECRET not set — using random ephemeral secret (sessions won\'t survive restart)')
+    } else {
+      console.error('[auth] SESSION_SECRET is required. Set it in your environment.')
+      process.exit(1)
+    }
+  }
+
   return session({
-    secret: process.env.SESSION_SECRET || 'gastown-dev-secret-change-in-prod',
+    secret,
     resave: false,
     saveUninitialized: false,
     cookie: {
-      secure: process.env.NODE_ENV === 'production',
+      secure: !DEV_MODE,
       httpOnly: true,
+      sameSite: 'lax',
       maxAge: 7 * 24 * 60 * 60 * 1000
     }
   })

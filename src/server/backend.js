@@ -105,6 +105,15 @@ export class AgentTeamsBackend {
     } catch { /* ignore */ }
   }
 
+  cloneRepo(teamName, repoUrl) {
+    this.ensureContainer(teamName)
+    const dir = `/workspace/${teamName}`
+    // Clone into the project workspace; if dir already has files, clone into a temp and move contents
+    const cmd = `cd ${dir} && if [ "$(ls -A)" ]; then tmp=$(mktemp -d) && git clone ${JSON.stringify(repoUrl)} "$tmp/repo" && mv "$tmp/repo/"* "$tmp/repo/".* . 2>/dev/null; rm -rf "$tmp"; else git clone ${JSON.stringify(repoUrl)} .; fi`
+    this._exec(teamName, cmd, { encoding: 'utf-8', timeout: 60000 })
+    console.log(`[clone] Cloned ${repoUrl} into ${teamName}`)
+  }
+
   stopContainer(teamName) {
     if (!this.dockerEnabled) return
     const name = this._containerName(teamName)

@@ -1,4 +1,5 @@
 import { Server } from 'socket.io'
+import { DEV_MODE } from './auth.js'
 
 // User colors pool (6 distinct colors)
 const USER_COLORS = [
@@ -39,8 +40,8 @@ export class MultiplayerServer {
         // Authenticated user
         socket.userId = session.passport.user
         next()
-      } else if (process.env.NODE_ENV !== 'production') {
-        // Allow anonymous in dev mode
+      } else if (DEV_MODE) {
+        // Allow anonymous only when NODE_ENV=development|dev
         socket.userId = `anon-${socket.id.substring(0, 8)}`
         next()
       } else {
