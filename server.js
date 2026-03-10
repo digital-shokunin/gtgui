@@ -1800,6 +1800,10 @@ terminalNs.on('connection', (socket) => {
       try { tmuxProc.kill() } catch { /* ignore */ }
       tmuxProc = null
     }
+    // Invalidate activity cache so next status poll re-checks this session
+    if (currentSession && currentTeam) {
+      backend.invalidateTmuxActivityCache(currentSession, currentTeam)
+    }
   })
 })
 

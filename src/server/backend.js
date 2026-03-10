@@ -392,6 +392,45 @@ export class AgentTeamsBackend {
     if (existsSync(taskDir)) rmSync(taskDir, { recursive: true })
   }
 
+  // Detect if a Claude session is actively working by checking the tmux pane
+  // Claude shows ❯ prompt when idle; spinners/output when working
+  // Results are cached for 3 minutes to avoid excessive shell execs on every poll
+  _detectTmuxActivity(tmuxName, teamName) {
+    if (!this._tmuxActivityCache) this._tmuxActivityCache = {}
+    const cacheKey = `${teamName}/${tmuxName}`
+    const cached = this._tmuxActivityCache[cacheKey]
+    if (cached && Date.now() - cached.at < 180000) return cached.active
+
+    try {
+      const safeSession = tmuxName.replace(/'/g, "'\\''")
+      const cmd = `tmux capture-pane -t '${safeSession}' -p 2>/dev/null | tail -5`
+      const output = this._exec(teamName, cmd, { encoding: 'utf-8', timeout: 3000 }) || ''
+      const lines = output.trim().split('\n').filter(l => l.trim())
+      const lastLine = lines[lines.length - 1] || ''
+      let active = true
+      // The prompt line is just "❯" possibly with trailing spaces
+      if (/^❯\s*$/.test(lastLine)) active = false
+      // Status bar line (bypass permissions, shortcuts) = idle
+      else if (lastLine.includes('bypass permissions') || lastLine.includes('shortc')) active = false
+      // Separator line (▪▪▪) = idle
+      else if (/^[─▪\s]+$/.test(lastLine)) active = false
+      // Resume picker or onboarding = not working
+      else if (lastLine.includes('Resume Session') || lastLine.includes('Enter to select')) active = false
+
+      this._tmuxActivityCache[cacheKey] = { active, at: Date.now() }
+      return active
+    } catch {
+      this._tmuxActivityCache[cacheKey] = { active: false, at: Date.now() }
+      return false
+    }
+  }
+
+  // Invalidate tmux activity cache for a specific session (e.g., when terminal closes)
+  invalidateTmuxActivityCache(tmuxName, teamName) {
+    if (!this._tmuxActivityCache) return
+    delete this._tmuxActivityCache[`${teamName}/${tmuxName}`]
+  }
+
   // ===== TEAMMATE MANAGEMENT =====
 
   getTeammates(teamName) {
@@ -427,6 +466,10 @@ export class AgentTeamsBackend {
         if (!alive && status === 'working') {
           status = 'stuck'
         }
+      } else if (alive) {
+        // No task file, but session is alive — check tmux pane for activity
+        // Claude shows ❯ prompt when idle, spinners/output when working
+        status = this._detectTmuxActivity(tmuxName, teamName) ? 'working' : 'idle'
       }
 
       return {
