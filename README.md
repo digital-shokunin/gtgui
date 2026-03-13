@@ -6,6 +6,8 @@ A Club Penguin-inspired browser UI for managing [Claude Code](https://docs.anthr
 
 ![Terminal Session](docs/terminal-session.png)
 
+![Live Terminal — Claude Code in Container](docs/terminal-live.png)
+
 ## Features
 
 - **Isometric colony map** — penguins waddle around a snowy landscape with buildings
