@@ -3581,14 +3581,21 @@ export class UIScene extends Phaser.Scene {
         inputEl.type = 'text'
         inputEl.value = defaultValue || ''
         inputEl.placeholder = placeholder || ''
+        // Position relative to actual canvas element, not viewport
+        const canvas = this.game.canvas
+        const rect = canvas.getBoundingClientRect()
+        const scaleX = rect.width / width
+        const scaleY = rect.height / height
+        const inputLeft = rect.left + (width/2 - modalWidth/2 + 28) * scaleX
+        const inputTop = rect.top + (height/2 - modalHeight/2 + 115) * scaleY
         inputEl.style.cssText = `
           position: fixed;
-          left: ${width/2 - modalWidth/2 + 28}px;
-          top: ${height/2 - modalHeight/2 + 115}px;
-          width: ${modalWidth - 60}px;
-          height: 30px;
+          left: ${inputLeft}px;
+          top: ${inputTop}px;
+          width: ${(modalWidth - 60) * scaleX}px;
+          height: ${30 * scaleY}px;
           font-family: Fredoka, sans-serif;
-          font-size: 16px;
+          font-size: ${16 * scaleY}px;
           border: none;
           background: transparent;
           outline: none;
@@ -3620,13 +3627,17 @@ export class UIScene extends Phaser.Scene {
       // Checkbox if needed
       let checkboxChecked = false
       if (options.checkbox) {
+        const cbCanvas = this.game.canvas
+        const cbRect = cbCanvas.getBoundingClientRect()
+        const cbScaleX = cbRect.width / width
+        const cbScaleY = cbRect.height / height
         const cbEl = document.createElement('label')
         cbEl.style.cssText = `
           position: fixed;
-          left: ${width/2 - modalWidth/2 + 28}px;
-          top: ${height/2 + modalHeight/2 - 85}px;
+          left: ${cbRect.left + (width/2 - modalWidth/2 + 28) * cbScaleX}px;
+          top: ${cbRect.top + (height/2 + modalHeight/2 - 85) * cbScaleY}px;
           font-family: Fredoka, sans-serif;
-          font-size: 13px;
+          font-size: ${13 * cbScaleY}px;
           color: #555;
           cursor: pointer;
           display: flex;

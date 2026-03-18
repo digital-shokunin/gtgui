@@ -57,6 +57,8 @@ const PENGUIN_NAMES = [
 
 function getNextPenguinName(teamName) {
   const existing = Object.keys(backend._getSessionMap(teamName))
+  // First agent in a project is always the king (lead)
+  if (!existing.includes(KING_PENGUIN)) return KING_PENGUIN
   for (const name of PENGUIN_NAMES) {
     if (!existing.includes(name)) return name
   }
