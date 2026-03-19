@@ -2,7 +2,7 @@ FROM ubuntu:24.04
 
 # System deps + locale support for Unicode box-drawing characters
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    tmux curl git ca-certificates nodejs npm locales \
+    tmux curl git openssh-client ca-certificates nodejs npm locales \
     && rm -rf /var/lib/apt/lists/* \
     && sed -i '/en_US.UTF-8/s/^# //g' /etc/locale.gen \
     && locale-gen

@@ -5046,10 +5046,18 @@ export class UIScene extends Phaser.Scene {
       })
     })
 
+    // Server-side buffer cache: instant screen restore on reconnect
+    let bufferReceived = false
+    socket.on('buffer', (data) => {
+      bufferReceived = true
+      term.clear()
+      term.write(data)
+    })
+
     socket.on('attached', (data) => {
       this._updateSessionIndicator(null, null, true)
-      // Clear the "connecting" message
-      term.clear()
+      // Only clear "connecting" message if no buffer was already written
+      if (!bufferReceived) term.clear()
     })
 
     socket.on('output', (data) => {

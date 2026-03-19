@@ -3,7 +3,7 @@ import cors from 'cors'
 import { createServer } from 'http'
 import { fileURLToPath } from 'url'
 import { dirname, join } from 'path'
-import { writeFileSync, readFileSync, mkdirSync, existsSync } from 'fs'
+import { writeFileSync, readFileSync, mkdirSync, existsSync, createWriteStream, readdirSync, statSync } from 'fs'
 import { spawn, execSync } from 'child_process'
 import pty from 'node-pty'
 import { setupAuth, getSessionMiddleware, requireAuth, DEV_MODE } from './src/server/auth.js'
@@ -500,6 +500,15 @@ app.post('/api/rigs/:name/polecats', (req, res) => {
 
   try {
     const result = backend.spawnTeammate(name, memberName, cwd || null)
+
+    // Also spawn the tmux session so the agent is immediately connectable
+    const tmuxName = backend._tmuxName(name, memberName)
+    if (!backend.isTmuxSessionAlive(tmuxName, { teamName: name })) {
+      backend.spawnTmuxSession(tmuxName, null, { teamName: name })
+      const map = backend._getSessionMap(name)
+      map[memberName] = { ...map[memberName], alive: true }
+      backend._saveSessionMap(name, map)
+    }
 
     multiplayer.broadcastStateUpdate({ event: 'polecat:spawned', rig: name, polecat: memberName })
     addActivityEvent('agent_spawned', { agent: memberName, rig: name }, req.session?.passport?.user)
@@ -1711,6 +1720,35 @@ app.get('/api/mayor/status', (req, res) => res.redirect('/api/emperor/status'))
 app.post('/api/mayor/message', (req, res) => res.redirect(307, '/api/emperor/message'))
 app.get('/api/mayor/stream', (req, res) => res.redirect('/api/emperor/stream'))
 
+// ===== RECORDINGS API =====
+app.get('/api/recordings', (req, res) => {
+  try {
+    const files = readdirSync(RECORDINGS_DIR)
+      .filter(f => f.endsWith('.cast'))
+      .map(f => {
+        const st = statSync(join(RECORDINGS_DIR, f))
+        return { name: f, size: st.size, created: st.birthtime }
+      })
+      .sort((a, b) => b.created - a.created)
+    res.json(files)
+  } catch {
+    res.json([])
+  }
+})
+
+app.get('/api/recordings/:filename', (req, res) => {
+  const { filename } = req.params
+  if (!/^colony_[a-zA-Z0-9_]+_\d+\.cast$/.test(filename)) {
+    return res.status(400).json({ error: 'Invalid filename' })
+  }
+  const filePath = join(RECORDINGS_DIR, filename)
+  if (!existsSync(filePath)) {
+    return res.status(404).json({ error: 'Recording not found' })
+  }
+  res.setHeader('Content-Type', 'application/x-asciicast')
+  res.sendFile(filePath)
+})
+
 // Static files
 app.use(express.static(join(__dirname, 'dist')))
 
@@ -1726,6 +1764,71 @@ app.use((err, req, res, next) => {
 })
 
 // ===== TERMINAL WebSocket: tmux attach bridge via socket.io =====
+// --- VibeTunnel-inspired: server-side buffer cache for instant reconnect ---
+const terminalBuffers = new Map()  // sessionName → { data: string, updatedAt: number }
+const TERMINAL_BUFFER_MAX = 64 * 1024  // 64KB per session (last screenful)
+
+function updateTerminalBuffer(sessionName, chunk) {
+  let buf = terminalBuffers.get(sessionName)
+  if (!buf) {
+    buf = { data: '', updatedAt: Date.now() }
+    terminalBuffers.set(sessionName, buf)
+  }
+  buf.data += chunk
+  // Keep only the tail (last 64KB) — enough for a full screen redraw
+  if (buf.data.length > TERMINAL_BUFFER_MAX) {
+    buf.data = buf.data.slice(-TERMINAL_BUFFER_MAX)
+  }
+  buf.updatedAt = Date.now()
+}
+
+// --- VibeTunnel-inspired: asciinema session recording ---
+const RECORDINGS_DIR = join(GTGUI_DATA, 'recordings')
+mkdirSync(RECORDINGS_DIR, { recursive: true })
+const activeRecordings = new Map()  // sessionName → { stream, startTime }
+
+function startRecording(sessionName, cols, rows) {
+  const castFile = join(RECORDINGS_DIR, `${sessionName}_${Date.now()}.cast`)
+  const stream = createWriteStream(castFile, { flags: 'a' })
+  // Asciinema v2 header
+  const header = JSON.stringify({
+    version: 2,
+    width: cols,
+    height: rows,
+    timestamp: Math.floor(Date.now() / 1000),
+    env: { TERM: 'xterm-256color', SHELL: '/bin/bash' },
+    title: sessionName
+  })
+  stream.write(header + '\n')
+  const startTime = Date.now()
+  activeRecordings.set(sessionName, { stream, startTime, file: castFile })
+  console.log(`[recording] Started: ${castFile}`)
+  return castFile
+}
+
+function recordOutput(sessionName, data) {
+  const rec = activeRecordings.get(sessionName)
+  if (!rec) return
+  const elapsed = (Date.now() - rec.startTime) / 1000
+  // Asciinema v2 event: [time, "o", data]
+  rec.stream.write(JSON.stringify([elapsed, 'o', data]) + '\n')
+}
+
+function recordInput(sessionName, data) {
+  const rec = activeRecordings.get(sessionName)
+  if (!rec) return
+  const elapsed = (Date.now() - rec.startTime) / 1000
+  rec.stream.write(JSON.stringify([elapsed, 'i', data]) + '\n')
+}
+
+function stopRecording(sessionName) {
+  const rec = activeRecordings.get(sessionName)
+  if (!rec) return
+  rec.stream.end()
+  activeRecordings.delete(sessionName)
+  console.log(`[recording] Stopped: ${rec.file}`)
+}
+
 const terminalNs = multiplayer.io.of('/terminal')
 
 terminalNs.use((socket, next) => {
@@ -1797,10 +1900,18 @@ terminalNs.on('connection', (socket) => {
     tmuxProc = proc
     console.log(`[terminal] Attached to ${sessionName} (PID ${proc.pid}, ${cols}x${rows})${isDocker ? ' [docker]' : ''}`)
 
-    proc.onData((d) => socket.emit('output', d))
+    // Start asciinema recording for this session
+    const castFile = startRecording(sessionName, cols, rows)
+
+    proc.onData((d) => {
+      socket.emit('output', d)
+      updateTerminalBuffer(sessionName, d)
+      recordOutput(sessionName, d)
+    })
     proc.onExit(({ exitCode }) => {
       console.log(`[terminal] tmux attach exited (code ${exitCode})`)
       socket.emit('exit', { code: exitCode })
+      stopRecording(sessionName)
       tmuxProc = null
     })
 
@@ -1817,12 +1928,19 @@ terminalNs.on('connection', (socket) => {
       }, 500)
     }
 
-    socket.emit('attached', { sessionName })
+    // Send cached buffer for instant screen restore (VibeTunnel-inspired)
+    const cachedBuf = terminalBuffers.get(sessionName)
+    if (cachedBuf && cachedBuf.data) {
+      socket.emit('buffer', cachedBuf.data)
+    }
+
+    socket.emit('attached', { sessionName, recording: castFile })
   })
 
   socket.on('input', (data) => {
     if (tmuxProc) {
       tmuxProc.write(data)
+      if (currentSession) recordInput(currentSession, data)
     }
   })
 
@@ -1844,6 +1962,7 @@ terminalNs.on('connection', (socket) => {
 
   socket.on('disconnect', () => {
     console.log(`[terminal] Client disconnected: ${socket.id}`)
+    if (currentSession) stopRecording(currentSession)
     if (tmuxProc) {
       // Detach cleanly — send tmux detach key (Ctrl-B d by default, but we just kill)
       try { tmuxProc.kill() } catch { /* ignore */ }
