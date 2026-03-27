@@ -79,6 +79,8 @@ export class AgentTeamsBackend {
       '-e', 'NPM_CONFIG_IGNORE_SCRIPTS=true',
       '-e', 'NPM_CONFIG_AUDIT_LEVEL=critical',
       '-e', 'CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1',
+      '-e', `GH_TOKEN=${this.ghToken || process.env.GH_TOKEN || ''}`,
+      '-e', `GITHUB_TOKEN=${this.ghToken || process.env.GH_TOKEN || ''}`,
       `--memory=${this.containerMemory}`,
       `--cpus=${this.containerCpus}`,
       '--cap-drop=ALL',
@@ -98,10 +100,15 @@ export class AgentTeamsBackend {
   }
 
   // Copy host's .claude.json into container so Claude Code skips onboarding/theme picker
+  // Also configure git to use GH_TOKEN for HTTPS auth
   _ensureContainerOnboarding(containerName) {
     try {
       const hostFile = join(homedir(), '.claude.json')
       execSync(`docker cp ${JSON.stringify(hostFile)} ${JSON.stringify(containerName + ':/home/claude/.claude.json')}`, { timeout: 5000 })
+    } catch { /* ignore */ }
+    // Configure git credential helper to use GH_TOKEN env var
+    try {
+      execSync(`docker exec ${JSON.stringify(containerName)} bash -c "git config --global credential.helper '!f() { echo username=x-access-token; echo password=\\\$GH_TOKEN; }; f' 2>/dev/null && git config --global user.name 'Colony Agent' && git config --global user.email 'colony@secunit.local'"`, { timeout: 5000 })
     } catch { /* ignore */ }
   }
 

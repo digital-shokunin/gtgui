@@ -80,6 +80,9 @@ const DEFAULT_SETTINGS = {
   enableNotifications: true,
   tokenCostRate: 0.003,
   emperorName: 'Tiberius Claudius',  // Default Emperor name — user can change
+  ghToken: '',                        // GitHub PAT for container git operations
+  ghTokenSetAt: null,                 // ISO timestamp when token was saved
+  ghTokenExpiresAt: null,             // ISO timestamp when token expires (user-provided)
   dockerEnabled: false,              // Toggle Docker sandboxing per team
   dockerImage: 'colony-sandbox',     // Docker image for agent containers
   containerMemory: '',                // Memory limit per container (blank = auto-detect)
@@ -240,6 +243,7 @@ const backend = new AgentTeamsBackend({
   containerMemory: currentSettings.containerMemory || '',
   containerCpus: currentSettings.containerCpus || '',
   networkIsolation: currentSettings.networkIsolation || false,
+  ghToken: currentSettings.ghToken || process.env.GH_TOKEN || '',
 })
 
 // ===== STARTUP: Reassociate tmux sessions + detect zombies =====
@@ -903,10 +907,27 @@ app.get('/api/docker/status', (req, res) => {
 // ===== SETTINGS =====
 
 app.get('/api/settings', (req, res) => {
-  res.json(currentSettings)
+  // Mask ghToken — only show last 4 chars
+  const safe = { ...currentSettings }
+  if (safe.ghToken) {
+    safe.ghToken = '••••' + safe.ghToken.slice(-4)
+  }
+  res.json(safe)
 })
 
-app.post('/api/settings', (req, res) => {
+// Probe GitHub API to detect token expiry
+async function probeGhTokenExpiry(token) {
+  try {
+    const resp = await fetch('https://api.github.com/', {
+      headers: { Authorization: `token ${token}`, 'User-Agent': 'GTGUI' }
+    })
+    const expiry = resp.headers.get('github-authentication-token-expiration')
+    if (expiry) return new Date(expiry).toISOString()
+  } catch { /* ignore */ }
+  return null
+}
+
+app.post('/api/settings', async (req, res) => {
   const newSettings = { ...currentSettings, ...req.body }
 
   if (newSettings.stuckTokenThreshold < 1000) newSettings.stuckTokenThreshold = 1000
@@ -917,6 +938,15 @@ app.post('/api/settings', (req, res) => {
   newSettings.warningTokenThreshold = Math.round(newSettings.stuckTokenThreshold * 0.8)
   newSettings.warningTimeThreshold = Math.round(newSettings.stuckTimeThreshold * 0.8)
 
+  // If ghToken changed (not masked placeholder), probe for expiry
+  if (newSettings.ghToken && !newSettings.ghToken.startsWith('••••')) {
+    newSettings.ghTokenSetAt = new Date().toISOString()
+    newSettings.ghTokenExpiresAt = await probeGhTokenExpiry(newSettings.ghToken)
+  } else if (newSettings.ghToken?.startsWith('••••')) {
+    // Masked value sent back — preserve original token
+    newSettings.ghToken = currentSettings.ghToken
+  }
+
   if (saveSettings(newSettings)) {
     currentSettings = newSettings
     // Propagate Docker settings changes to backend
@@ -925,8 +955,12 @@ app.post('/api/settings', (req, res) => {
     backend.containerMemory = currentSettings.containerMemory || ''
     backend.containerCpus = currentSettings.containerCpus || ''
     backend.networkIsolation = currentSettings.networkIsolation || false
+    backend.ghToken = currentSettings.ghToken || ''
     multiplayer.broadcastStateUpdate({ event: 'settings:updated', settings: currentSettings })
-    res.json({ success: true, settings: currentSettings })
+    // Mask token in response
+    const safe = { ...currentSettings }
+    if (safe.ghToken) safe.ghToken = '••••' + safe.ghToken.slice(-4)
+    res.json({ success: true, settings: safe })
   } else {
     res.status(500).json({ error: 'Failed to save settings' })
   }

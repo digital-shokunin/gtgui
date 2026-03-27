@@ -418,7 +418,7 @@ export class UIScene extends Phaser.Scene {
     const width = this.cameras.main.width
     const height = this.cameras.main.height
     const panelWidth = 400
-    const panelHeight = 800
+    const panelHeight = 920
 
     this.settingsPanel = this.add.container(width/2, height/2)
     this.settingsPanel.setDepth(1500)
@@ -516,9 +516,90 @@ export class UIScene extends Phaser.Scene {
     this._emperorNameInput = nameInput
     yPos += 60
 
+    // ===== GITHUB SECTION =====
+    const ghDivider = this.add.graphics()
+    ghDivider.lineStyle(2, 0xE0E0E0, 1)
+    ghDivider.lineBetween(-panelWidth/2 + 25, yPos, panelWidth/2 - 25, yPos)
+    this.settingsPanel.add(ghDivider)
+    yPos += 20
+
+    const ghHeader = this.add.text(0, yPos, 'GITHUB', {
+      font: 'bold 14px Fredoka',
+      fill: '#0077B6'
+    }).setOrigin(0.5)
+    this.settingsPanel.add(ghHeader)
+    yPos += 25
+
+    // Token status line
+    const tokenExpiry = this.settings.ghTokenExpiresAt
+    const hasToken = this.settings.ghToken && this.settings.ghToken !== ''
+    let tokenStatus = 'No token set'
+    let tokenColor = '#999'
+    if (hasToken && tokenExpiry) {
+      const daysLeft = Math.ceil((new Date(tokenExpiry) - Date.now()) / 86400000)
+      if (daysLeft <= 0) {
+        tokenStatus = 'TOKEN EXPIRED'
+        tokenColor = '#E74C3C'
+      } else if (daysLeft <= 14) {
+        tokenStatus = `Expires in ${daysLeft} days`
+        tokenColor = '#F39C12'
+      } else {
+        tokenStatus = `Expires in ${daysLeft} days`
+        tokenColor = '#2ECC71'
+      }
+    } else if (hasToken) {
+      tokenStatus = 'Token set (no expiry detected)'
+      tokenColor = '#2ECC71'
+    }
+
+    const tokenStatusText = this.add.text(-panelWidth/2 + 25, yPos, tokenStatus, {
+      font: '12px Fredoka',
+      fill: tokenColor
+    })
+    this.settingsPanel.add(tokenStatusText)
+    yPos += 22
+
+    const ghTokenLabel = this.add.text(-panelWidth/2 + 25, yPos, 'GitHub PAT', {
+      font: 'bold 14px Fredoka',
+      fill: '#333333'
+    })
+    this.settingsPanel.add(ghTokenLabel)
+
+    const ghTokenInputId = 'gh-token-input'
+    let ghTokenInput = document.getElementById(ghTokenInputId)
+    if (ghTokenInput) ghTokenInput.remove()
+    ghTokenInput = document.createElement('input')
+    ghTokenInput.id = ghTokenInputId
+    ghTokenInput.type = 'password'
+    ghTokenInput.value = this.settings.ghToken || ''
+    ghTokenInput.placeholder = 'github_pat_...'
+    ghTokenInput.style.cssText = `
+      position: fixed;
+      left: ${width/2 - panelWidth/2 + 25}px;
+      top: ${height/2 + yPos + 20}px;
+      width: ${panelWidth - 50}px;
+      height: 32px;
+      font-family: 'Fredoka', monospace;
+      font-size: 13px;
+      padding: 4px 10px;
+      border: 2px solid #B0E0E6;
+      border-radius: 8px;
+      outline: none;
+      box-sizing: border-box;
+    `
+    ghTokenInput.onfocus = () => { ghTokenInput.style.borderColor = '#0077B6'; this.input.keyboard.enabled = false; this.input.keyboard.stopListeners() }
+    ghTokenInput.onblur = () => { ghTokenInput.style.borderColor = '#B0E0E6'; this.input.keyboard.enabled = true; this.input.keyboard.startListeners() }
+    ghTokenInput.oninput = () => { this.settings.ghToken = ghTokenInput.value }
+    ghTokenInput.addEventListener('keydown', e => e.stopPropagation())
+    ghTokenInput.addEventListener('keyup', e => e.stopPropagation())
+    ghTokenInput.addEventListener('keypress', e => e.stopPropagation())
+    document.body.appendChild(ghTokenInput)
+    this._ghTokenInput = ghTokenInput
+    yPos += 60
+
     // ===== SANDBOX SECTION =====
     const sandboxDivider = this.add.graphics()
-    sandboxDivider.lineStyle(2, 0xE0E0E0, 1)
+    sandboxDivider.lineStyle(2, 0xE0E0E6, 1)
     sandboxDivider.lineBetween(-panelWidth/2 + 25, yPos, panelWidth/2 - 25, yPos)
     this.settingsPanel.add(sandboxDivider)
     yPos += 20
@@ -620,6 +701,10 @@ export class UIScene extends Phaser.Scene {
     if (this._emperorNameInput) {
       this._emperorNameInput.remove()
       this._emperorNameInput = null
+    }
+    if (this._ghTokenInput) {
+      this._ghTokenInput.remove()
+      this._ghTokenInput = null
     }
     if (this._dockerImageInput) {
       this._dockerImageInput.remove()
