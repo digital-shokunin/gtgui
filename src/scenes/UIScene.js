@@ -417,7 +417,7 @@ export class UIScene extends Phaser.Scene {
   showSettingsPanel() {
     const width = this.cameras.main.width
     const height = this.cameras.main.height
-    const panelWidth = 400
+    const panelWidth = 440
     const panelHeight = 920
 
     this.settingsPanel = this.add.container(width/2, height/2)
