@@ -3321,9 +3321,9 @@ export class UIScene extends Phaser.Scene {
       this.notificationContainer.setX(width - 320)
     }
 
-    // Colony navigator — bottom-left
+    // Colony navigator — bottom-left (recalculate properly)
     if (this.colonyNav) {
-      this.colonyNav.setY(height - 200)
+      this.updateColonyNavigator()
     }
 
     // New project button — bottom-left
@@ -3512,8 +3512,12 @@ export class UIScene extends Phaser.Scene {
       this.colonyButtons.add(elements)
     })
 
-    // Reposition the navigator based on new height
-    this.colonyNav.setY(this.cameras.main.height - panelHeight - 80)
+    // Reposition the navigator based on new height, clamped to viewport
+    const screenHeight = this.cameras.main.height
+    const bottomMargin = 80 // space for New Project button
+    const topMin = 70 // below top bar
+    const idealY = screenHeight - panelHeight - bottomMargin
+    this.colonyNav.setY(Math.max(topMin, idealY))
   }
 
   getColonyStatus(colony) {
