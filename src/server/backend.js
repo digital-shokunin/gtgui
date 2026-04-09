@@ -16,6 +16,8 @@ export class AgentTeamsBackend {
     this.claudeAuthDir = config.claudeAuthDir || join(homedir(), '.claude')
     this.projectsRoot = config.projectsRoot || '/workspace'
     this.hostProjectsDir = config.hostProjectsDir || join(homedir(), 'projects')
+    // Host-side dir for per-container tmux socket mounts (low-latency terminal attach)
+    this.tmuxSocketDir = config.tmuxSocketDir || '/tmp/gtgui-tmux'
     // Auto-detect resource limits from host if not explicitly configured
     const detectedLimits = AgentTeamsBackend._detectResourceLimits()
     this.containerMemory = config.containerMemory || detectedLimits.memory
@@ -69,6 +71,10 @@ export class AgentTeamsBackend {
     mkdirSync(hostProjectDir, { recursive: true })
     const containerProjectDir = `/workspace/${teamName}`
 
+    // Create host-side tmux socket dir so GTGUI can attach without docker exec
+    const tmuxSocketHostDir = join(this.tmuxSocketDir, name)
+    mkdirSync(tmuxSocketHostDir, { recursive: true })
+
     // Build docker run args
     const args = [
       'docker', 'run', '-d',
@@ -76,6 +82,7 @@ export class AgentTeamsBackend {
       '-v', `${this.claudeAuthDir}:/home/claude/.claude`,
       '-v', `${join(homedir(), '.claude.json')}:/home/claude/.claude.json`,
       '-v', `${hostProjectDir}:${containerProjectDir}`,
+      '-v', `${tmuxSocketHostDir}:/tmp/tmux-1000`,
       '-e', 'NPM_CONFIG_IGNORE_SCRIPTS=true',
       '-e', 'NPM_CONFIG_AUDIT_LEVEL=critical',
       '-e', 'CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1',
@@ -126,8 +133,68 @@ export class AgentTeamsBackend {
     const name = this._containerName(teamName)
     try {
       execSync(`docker stop ${JSON.stringify(name)} && docker rm ${JSON.stringify(name)}`)
-      console.log(`[docker] Stopped container: ${name}`)
+      console.log(`[docker] Stopped and removed container: ${name}`)
     } catch {}
+  }
+
+  // Pause: stop the container WITHOUT removing it. State is preserved on disk
+  // and the container can be resumed later via resumeContainer(). Marks all
+  // sessions in the session map as not alive (tmux server dies on stop).
+  pauseContainer(teamName) {
+    if (!this.dockerEnabled) return false
+    const name = this._containerName(teamName)
+    try {
+      execSync(`docker stop ${JSON.stringify(name)}`)
+      console.log(`[docker] Paused container: ${name}`)
+      // Mark sessions as not alive so the UI reflects state
+      const sessionMap = this._getSessionMap(teamName)
+      for (const k of Object.keys(sessionMap)) {
+        sessionMap[k] = { ...sessionMap[k], alive: false }
+      }
+      this._saveSessionMap(teamName, sessionMap)
+      return true
+    } catch (e) {
+      console.error(`[docker] Failed to pause ${name}:`, e.message)
+      return false
+    }
+  }
+
+  // Resume: start a paused container and re-spawn each known session via --resume
+  // using the saved claudeSessionId. Returns { started, resumed: [names] }.
+  resumeContainer(teamName) {
+    if (!this.dockerEnabled) return { started: false, resumed: [] }
+    const name = this._containerName(teamName)
+    try {
+      execSync(`docker start ${JSON.stringify(name)}`)
+      console.log(`[docker] Started container: ${name}`)
+    } catch (e) {
+      console.error(`[docker] Failed to start ${name}:`, e.message)
+      return { started: false, resumed: [] }
+    }
+    // Re-resume each session in the map
+    const sessionMap = this._getSessionMap(teamName)
+    const resumed = []
+    for (const memberName of Object.keys(sessionMap)) {
+      const sInfo = sessionMap[memberName]
+      const tmuxName = sInfo.tmuxSession || this._tmuxName(teamName, memberName)
+      try {
+        this.spawnTmuxSession(tmuxName, null, {
+          teamName,
+          resumeSessionId: sInfo.claudeSessionId || null
+        })
+        sessionMap[memberName] = {
+          ...sInfo,
+          tmuxSession: tmuxName,
+          alive: true,
+          startedAt: new Date().toISOString()
+        }
+        resumed.push(memberName)
+      } catch (e) {
+        console.error(`[docker] Failed to resume ${memberName}:`, e.message)
+      }
+    }
+    this._saveSessionMap(teamName, sessionMap)
+    return { started: true, resumed }
   }
 
   isContainerRunning(teamName) {

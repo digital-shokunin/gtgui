@@ -531,6 +531,30 @@ app.get('/api/rigs/:name/polecats', (req, res) => {
   res.json(teammates)
 })
 
+// POST /api/rigs/:name/pause - docker stop the container (preserves state)
+app.post('/api/rigs/:name/pause', (req, res) => {
+  const teamName = req.params.name
+  const ok = backend.pauseContainer(teamName)
+  if (ok) {
+    addActivityEvent('container_paused', { rig: teamName }, req.session?.passport?.user)
+    res.json({ success: true })
+  } else {
+    res.status(500).json({ error: 'Failed to pause container' })
+  }
+})
+
+// POST /api/rigs/:name/resume-container - docker start + auto-resume sessions
+app.post('/api/rigs/:name/resume-container', (req, res) => {
+  const teamName = req.params.name
+  const result = backend.resumeContainer(teamName)
+  if (result.started) {
+    addActivityEvent('container_resumed', { rig: teamName, agents: result.resumed }, req.session?.passport?.user)
+    res.json({ success: true, resumed: result.resumed })
+  } else {
+    res.status(500).json({ error: 'Failed to start container' })
+  }
+})
+
 // POST /api/sling - Assign work to agent
 app.post('/api/sling', (req, res) => {
   const { agent, issue } = req.body
@@ -1912,13 +1936,26 @@ terminalNs.on('connection', (socket) => {
     const isDocker = backend.dockerEnabled && teamName
 
     // Both modes use node-pty for proper PTY with resize support.
-    // Docker mode: stty raw -echo on outer PTY prevents double line-discipline
-    // interference (buffering, echo, space eating) before exec'ing docker.
+    // Fast path: if container has tmux socket bind-mounted, attach via host tmux
+    //   client directly → no docker exec stdio buffering overhead.
+    // Slow path: fall back to docker exec -it for containers without the mount
+    //   (stty raw -echo prevents double line-discipline interference).
     let cmd, args
+    let attachMode = 'host'
     if (isDocker) {
       const container = backend._containerName(teamName)
-      cmd = 'sh'
-      args = ['-c', `stty raw -echo; exec docker exec -it -e TERM=xterm-256color -e LANG=en_US.UTF-8 -e LC_ALL=en_US.UTF-8 -e COLUMNS=${cols} -e LINES=${rows} ${container} tmux attach-session -t '${safeSession}'`]
+      const socketPath = `${backend.tmuxSocketDir}/${container}/default`
+      if (existsSync(socketPath)) {
+        // Fast path: attach directly via bind-mounted Unix socket
+        cmd = 'tmux'
+        args = ['-S', socketPath, 'attach-session', '-t', sessionName]
+        attachMode = 'socket'
+      } else {
+        // Legacy path: docker exec -it wrapper
+        cmd = 'sh'
+        args = ['-c', `stty raw -echo; exec docker exec -it -e TERM=xterm-256color -e LANG=en_US.UTF-8 -e LC_ALL=en_US.UTF-8 -e COLUMNS=${cols} -e LINES=${rows} ${container} tmux attach-session -t '${safeSession}'`]
+        attachMode = 'docker-exec'
+      }
     } else {
       cmd = 'tmux'
       args = ['attach-session', '-t', sessionName]
@@ -1932,7 +1969,7 @@ terminalNs.on('connection', (socket) => {
     })
 
     tmuxProc = proc
-    console.log(`[terminal] Attached to ${sessionName} (PID ${proc.pid}, ${cols}x${rows})${isDocker ? ' [docker]' : ''}`)
+    console.log(`[terminal] Attached to ${sessionName} (PID ${proc.pid}, ${cols}x${rows}) [${attachMode}]`)
 
     // Start asciinema recording for this session
     const castFile = startRecording(sessionName, cols, rows)

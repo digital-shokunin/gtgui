@@ -131,6 +131,16 @@ export class GasTownAPI {
     return this.request('/docker/status')
   }
 
+  // Pause a rig's container (docker stop, preserves state)
+  async pauseRig(rigName) {
+    return this.request(`/rigs/${encodeURIComponent(rigName)}/pause`, { method: 'POST' })
+  }
+
+  // Resume a paused rig's container (docker start + auto-resume sessions)
+  async resumeRigContainer(rigName) {
+    return this.request(`/rigs/${encodeURIComponent(rigName)}/resume-container`, { method: 'POST' })
+  }
+
   // ===== ACTIVITY FEED =====
 
   async getActivityFeed(options = {}) {

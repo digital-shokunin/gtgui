@@ -367,8 +367,8 @@ export class UIScene extends Phaser.Scene {
   createSettingsButton() {
     const width = this.cameras.main.width
 
-    // Gear icon button in top bar (left of town name, right of Online indicator)
-    const btnX = width - 250
+    // Gear icon button in top bar (left of "PENGUIN COLONY" text, right of Online indicator)
+    const btnX = width - 290
     const btnY = 33
 
     this.settingsBtn = this.add.container(btnX, btnY)
@@ -1070,7 +1070,7 @@ export class UIScene extends Phaser.Scene {
     const width = this.cameras.main.width
 
     // Users container (positioned to the left of settings gear, vertically centered in header)
-    this.usersContainer = this.add.container(width - 295, 33)
+    this.usersContainer = this.add.container(width - 335, 33)
 
     // "Online:" label
     this.usersLabel = this.add.text(0, 0, 'Online:', {
@@ -3299,11 +3299,11 @@ export class UIScene extends Phaser.Scene {
     }
 
     if (this.usersContainer) {
-      this.usersContainer.setPosition(width - 255, 33)
+      this.usersContainer.setPosition(width - 335, 33)
     }
 
     if (this.settingsBtn) {
-      this.settingsBtn.setPosition(width - 210, 33)
+      this.settingsBtn.setPosition(width - 290, 33)
     }
 
     // Cost dashboard — top-right
@@ -5033,6 +5033,30 @@ export class UIScene extends Phaser.Scene {
     headerRight.appendChild(statusLabel)
     this._domSessionLabel = statusLabel
 
+    // Pause container button — docker stop the rig to free memory
+    const teamFromAgent = agentId.split('/')[0]
+    const pauseBtn = document.createElement('button')
+    pauseBtn.innerHTML = '⏸'
+    pauseBtn.title = 'Pause container (frees memory, state preserved)'
+    pauseBtn.style.cssText = `
+      width: 28px; height: 28px; border-radius: 50%; border: none;
+      background: #F39C12; color: white; font-size: 14px; font-weight: bold;
+      cursor: pointer; display: flex; align-items: center; justify-content: center;
+    `
+    pauseBtn.addEventListener('click', async () => {
+      if (!confirm(`Pause container for "${teamFromAgent}"? Frees memory; state is preserved.`)) return
+      pauseBtn.disabled = true
+      try {
+        await this.api.pauseRig(teamFromAgent)
+        this._closeOutputViewer()
+        if (this.refreshDockerStatus) this.refreshDockerStatus()
+      } catch (e) {
+        alert('Failed to pause: ' + e.message)
+        pauseBtn.disabled = false
+      }
+    })
+    headerRight.appendChild(pauseBtn)
+
     // Close button
     const closeBtn = document.createElement('button')
     closeBtn.innerHTML = '&times;'
@@ -5119,73 +5143,135 @@ export class UIScene extends Phaser.Scene {
       tmuxSessionName = `colony_default_${parts[0]}`
     }
 
-    // Connect to terminal WebSocket
-    const { io } = await import('socket.io-client')
-    const socket = io('/terminal', {
-      transports: ['websocket']
-    })
-    this._termSocket = socket
-
-    socket.on('connect', () => {
-      term.writeln('\x1b[33mConnecting to tmux session...\x1b[0m')
-      socket.emit('attach', {
-        sessionName: tmuxSessionName,
-        cols: term.cols,
-        rows: term.rows
+    // Define the socket attach function so the paused-overlay click handler can call it
+    const startSocketAttach = async () => {
+      // Connect to terminal WebSocket
+      const { io } = await import('socket.io-client')
+      const socket = io('/terminal', {
+        transports: ['websocket']
       })
-    })
+      this._termSocket = socket
 
-    // Server-side buffer cache: instant screen restore on reconnect
-    let bufferReceived = false
-    socket.on('buffer', (data) => {
-      bufferReceived = true
-      term.clear()
-      term.write(data)
-    })
+      socket.on('connect', () => {
+        term.writeln('\x1b[33mConnecting to tmux session...\x1b[0m')
+        socket.emit('attach', {
+          sessionName: tmuxSessionName,
+          cols: term.cols,
+          rows: term.rows
+        })
+      })
 
-    socket.on('attached', (data) => {
-      this._updateSessionIndicator(null, null, true)
-      // Only clear "connecting" message if no buffer was already written
-      if (!bufferReceived) term.clear()
-    })
+      // Server-side buffer cache: instant screen restore on reconnect
+      let bufferReceived = false
+      socket.on('buffer', (data) => {
+        bufferReceived = true
+        term.clear()
+        term.write(data)
+      })
 
-    socket.on('output', (data) => {
-      term.write(data)
-    })
+      socket.on('attached', (data) => {
+        this._updateSessionIndicator(null, null, true)
+        if (!bufferReceived) term.clear()
+      })
 
-    socket.on('error', (data) => {
-      term.writeln(`\x1b[31mError: ${data.message}\x1b[0m`)
-      term.writeln('\x1b[33mFalling back to read-only log view...\x1b[0m')
-      this._updateSessionIndicator(null, null, false)
+      socket.on('output', (data) => {
+        term.write(data)
+      })
 
-      // Fallback: show captured logs
-      this._showFallbackLogs(agentId, term)
-    })
+      socket.on('error', (data) => {
+        term.writeln(`\x1b[31mError: ${data.message}\x1b[0m`)
+        term.writeln('\x1b[33mFalling back to read-only log view...\x1b[0m')
+        this._updateSessionIndicator(null, null, false)
+        this._showFallbackLogs(agentId, term)
+      })
 
-    socket.on('exit', (data) => {
-      term.writeln(`\x1b[33m\r\n--- Session detached (exit code: ${data.code}) ---\x1b[0m`)
-      this._updateSessionIndicator(null, null, false)
-    })
+      socket.on('exit', (data) => {
+        term.writeln(`\x1b[33m\r\n--- Session detached (exit code: ${data.code}) ---\x1b[0m`)
+        this._updateSessionIndicator(null, null, false)
+      })
 
-    socket.on('disconnect', () => {
-      this._updateSessionIndicator(null, null, false)
-    })
+      socket.on('disconnect', () => {
+        this._updateSessionIndicator(null, null, false)
+      })
 
-    // Forward terminal input to server
-    term.onData((data) => {
-      socket.emit('input', data)
-    })
+      term.onData((data) => {
+        socket.emit('input', data)
+      })
 
-    // Handle resize
-    term.onResize(({ cols, rows }) => {
-      socket.emit('resize', { cols, rows })
-    })
+      term.onResize(({ cols, rows }) => {
+        socket.emit('resize', { cols, rows })
+      })
 
-    // Focus the terminal
-    setTimeout(() => {
-      term.focus()
-      fitAddon.fit()
-    }, 200)
+      setTimeout(() => {
+        term.focus()
+        fitAddon.fit()
+      }, 200)
+    }
+
+    // Check if container is paused — if so, show Start & Resume button instead of attaching
+    let containerRunning = true
+    try {
+      const dockerStatus = await this.api.getDockerStatus()
+      if (dockerStatus?.enabled) {
+        const cInfo = dockerStatus.containers?.[teamFromAgent]
+        if (cInfo && cInfo.running === false) containerRunning = false
+      }
+    } catch { /* ignore — fall through to attach attempt */ }
+
+    if (!containerRunning) {
+      // Show overlay with Start & Resume button
+      const pausedOverlay = document.createElement('div')
+      pausedOverlay.style.cssText = `
+        position: absolute; inset: 0; display: flex; flex-direction: column;
+        align-items: center; justify-content: center; gap: 16px;
+        background: rgba(13, 13, 26, 0.95); color: #ECF0F1;
+        font-family: Fredoka, sans-serif;
+      `
+      const msg = document.createElement('div')
+      msg.textContent = `Container "${teamFromAgent}" is paused`
+      msg.style.cssText = 'font-size: 18px; font-weight: bold;'
+      pausedOverlay.appendChild(msg)
+      const sub = document.createElement('div')
+      sub.textContent = 'Memory was freed. Start it and resume your session?'
+      sub.style.cssText = 'font-size: 13px; color: #7F8C8D;'
+      pausedOverlay.appendChild(sub)
+      const startBtn = document.createElement('button')
+      startBtn.textContent = '▶ Start & Resume'
+      startBtn.style.cssText = `
+        padding: 12px 24px; border-radius: 8px; border: none;
+        background: #2ECC71; color: white; font: bold 15px Fredoka;
+        cursor: pointer;
+      `
+      startBtn.addEventListener('click', async () => {
+        startBtn.disabled = true
+        startBtn.textContent = 'Starting...'
+        try {
+          await this.api.resumeRigContainer(teamFromAgent)
+          if (this.refreshDockerStatus) this.refreshDockerStatus()
+          // Remove overlay and proceed with attach
+          pausedOverlay.remove()
+          // Allow tmux session a moment to come up
+          await new Promise(r => setTimeout(r, 1500))
+          containerRunning = true
+          startSocketAttach()
+        } catch (e) {
+          startBtn.textContent = 'Failed: ' + e.message
+          setTimeout(() => {
+            startBtn.disabled = false
+            startBtn.textContent = '▶ Start & Resume'
+          }, 3000)
+        }
+      })
+      pausedOverlay.appendChild(startBtn)
+      termContainer.appendChild(pausedOverlay)
+      this._domSessionLabel.textContent = 'PAUSED'
+      this._domSessionLabel.style.color = '#F39C12'
+      return
+    }
+
+    if (containerRunning) {
+      startSocketAttach()
+    }
   }
 
   async _showFallbackLogs(agentId, term) {
