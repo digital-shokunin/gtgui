@@ -738,12 +738,13 @@ export class GameScene extends Phaser.Scene {
     const offsetX = Phaser.Math.Between(-2, 2)
     const offsetY = Phaser.Math.Between(-2, 2)
 
+    const spriteKey = this.textures.exists(`unit-${polecatName}`) ? `unit-${polecatName}` : 'unit-polecat'
     const unit = this.addUnit(
       `polecat-${colonyName}-${polecatName}`,
       polecatName,
       colony.centerX + offsetX,
       colony.centerY + offsetY,
-      'unit-polecat-idle',
+      spriteKey,
       'idle'
     )
 
@@ -806,8 +807,8 @@ export class GameScene extends Phaser.Scene {
     // Add polecats to their rigs (filter out emperor — it has its own sprite)
     if (state.polecats) {
       state.polecats.filter(pc => pc.name !== 'emperor').forEach((pc, i) => {
-        const status = pc.status === 'working' ? 'unit-polecat-working' :
-                       pc.status === 'stuck' ? 'unit-polecat-stuck' : 'unit-polecat-idle'
+        // Sprite by ROLE, animation by STATUS
+        const spriteKey = this.textures.exists(`unit-${pc.name}`) ? `unit-${pc.name}` : 'unit-polecat'
 
         // Find the colony this polecat belongs to
         const colony = this.colonies.find(v => v.name === pc.rig)
@@ -821,7 +822,7 @@ export class GameScene extends Phaser.Scene {
           colony.polecats.push(pc.name)
         }
 
-        this.addUnit(`polecat-${pc.rig}-${pc.name}`, pc.name, gridX, gridY, status, pc.status)
+        this.addUnit(`polecat-${pc.rig}-${pc.name}`, pc.name, gridX, gridY, spriteKey, pc.status)
       })
     }
 
@@ -1044,10 +1045,40 @@ export class GameScene extends Phaser.Scene {
     this.unitLayer.add(unit)
     this.units.set(id, unit)
 
-    // Enhanced idle animation with breathing and occasional blink
+    // Apply status-driven animations (re-applicable on status change)
+    this._applyStatusAnimation(unit, status)
+
+    // Sort units by Y
+    this.unitLayer.sort('y')
+
+    return unit
+  }
+
+  // Apply animations and tints based on status. Clears any prior status tweens
+  // and timed events on the unit so it can be safely called when status changes.
+  _applyStatusAnimation(unit, status) {
+    if (!unit || !unit.sprite) return
+    const sprite = unit.sprite
+
+    // Stop any prior status-driven tweens
+    if (unit._statusTweens) {
+      unit._statusTweens.forEach(t => { try { t.stop(); t.remove() } catch {} })
+    }
+    unit._statusTweens = []
+    if (unit._statusTimers) {
+      unit._statusTimers.forEach(t => { try { t.remove() } catch {} })
+    }
+    unit._statusTimers = []
+
+    // Reset sprite transform/tint between states
+    sprite.setScale(1, 1)
+    sprite.setAngle(0)
+    sprite.setAlpha(1)
+    sprite.clearTint()
+
     if (status === 'idle') {
-      // Breathing effect (subtle scale)
-      this.tweens.add({
+      // Breathing + gentle bob + occasional look-around
+      unit._statusTweens.push(this.tweens.add({
         targets: sprite,
         scaleY: { from: 1, to: 1.02 },
         scaleX: { from: 1, to: 0.98 },
@@ -1055,10 +1086,8 @@ export class GameScene extends Phaser.Scene {
         yoyo: true,
         repeat: -1,
         ease: 'Sine.easeInOut'
-      })
-
-      // Gentle bob
-      this.tweens.add({
+      }))
+      unit._statusTweens.push(this.tweens.add({
         targets: sprite,
         y: -3,
         duration: 1500,
@@ -1066,10 +1095,8 @@ export class GameScene extends Phaser.Scene {
         repeat: -1,
         ease: 'Sine.easeInOut',
         delay: Phaser.Math.Between(0, 500)
-      })
-
-      // Occasional look-around (random rotation)
-      this.time.addEvent({
+      }))
+      unit._statusTimers.push(this.time.addEvent({
         delay: Phaser.Math.Between(3000, 6000),
         callback: () => {
           if (unit.active) {
@@ -1083,12 +1110,10 @@ export class GameScene extends Phaser.Scene {
           }
         },
         loop: true
-      })
-    }
-
-    // Working animation (busy typing/working motion)
-    if (status === 'working') {
-      this.tweens.add({
+      }))
+    } else if (status === 'working') {
+      // Squish + sparkles
+      unit._statusTweens.push(this.tweens.add({
         targets: sprite,
         scaleX: { from: 1, to: 1.08 },
         scaleY: { from: 1, to: 0.92 },
@@ -1096,10 +1121,8 @@ export class GameScene extends Phaser.Scene {
         yoyo: true,
         repeat: -1,
         ease: 'Sine.easeInOut'
-      })
-
-      // Occasional progress sparkle
-      this.time.addEvent({
+      }))
+      unit._statusTimers.push(this.time.addEvent({
         delay: 2000,
         callback: () => {
           if (unit.active) {
@@ -1107,25 +1130,37 @@ export class GameScene extends Phaser.Scene {
           }
         },
         loop: true
-      })
-    }
-
-    // Stuck animation (worried jitter)
-    if (status === 'stuck') {
-      this.tweens.add({
+      }))
+    } else if (status === 'needs_attention') {
+      // Red tint pulse + faster shake to grab the user's eye
+      sprite.setTint(0xFF6B6B)
+      unit._statusTweens.push(this.tweens.add({
+        targets: sprite,
+        alpha: { from: 1, to: 0.6 },
+        duration: 600,
+        yoyo: true,
+        repeat: -1,
+        ease: 'Sine.easeInOut'
+      }))
+      unit._statusTweens.push(this.tweens.add({
+        targets: sprite,
+        x: { from: -1, to: 1 },
+        duration: 80,
+        yoyo: true,
+        repeat: -1,
+        ease: 'Linear'
+      }))
+    } else if (status === 'stuck') {
+      // Worried jitter
+      unit._statusTweens.push(this.tweens.add({
         targets: sprite,
         x: { from: -2, to: 2 },
         duration: 100,
         yoyo: true,
         repeat: -1,
         ease: 'Linear'
-      })
+      }))
     }
-
-    // Sort units by Y
-    this.unitLayer.sort('y')
-
-    return unit
   }
 
   gridToIso(gridX, gridY) {
@@ -1219,10 +1254,11 @@ export class GameScene extends Phaser.Scene {
             unit.rig = pc.rig
             unit.issue = pc.issue
 
-            // Update sprite based on status
-            const newKey = pc.status === 'working' ? 'unit-polecat-working' :
-                          pc.status === 'stuck' ? 'unit-polecat-stuck' : 'unit-polecat-idle'
-            unit.sprite.setTexture(newKey)
+            // Sprite stays role-based (set at creation). Re-apply status animations
+            // only when status actually changes.
+            if (oldStatus !== pc.status) {
+              this._applyStatusAnimation(unit, pc.status)
+            }
 
             // Play sea lion animation if just became stuck
             if (oldStatus !== 'stuck' && pc.status === 'stuck') {
@@ -1379,9 +1415,10 @@ export class GameScene extends Phaser.Scene {
           }
         }
 
-        // Notify UI and dismiss on backend
+        // Notify UI only — do NOT auto-dismiss on backend.
+        // The sea lion animation is visual feedback that the agent may be stuck.
+        // Actual dismissal requires explicit user action via the selection card.
         this.events.emit('selectionChanged', [])
-        this.events.emit('agentDismissed', { unitId, unitName, rig: unit.rig })
       }
     })
 

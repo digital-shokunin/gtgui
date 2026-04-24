@@ -1500,7 +1500,10 @@ export class UIScene extends Phaser.Scene {
     const baseHeight = 178  // header + avatar + name + badge + padding
     const hasProgress = (status === 'working' || status === 'stuck')
     const progressHeight = hasProgress ? 30 : 0
-    const buttonCount = status === 'idle' ? 3 : (status === 'working' ? 2 : 4)
+    const buttonCount = status === 'idle' ? 3
+      : status === 'working' ? 2
+      : status === 'needs_attention' ? 4
+      : 4  // stuck or unknown
     const buttonsHeight = buttonCount * 52
     const cardHeight = baseHeight + progressHeight + buttonsHeight + 20
 
@@ -1553,7 +1556,11 @@ export class UIScene extends Phaser.Scene {
         break
       case 'stuck':
         statusColor = 0xE74C3C
-        statusText = 'NEEDS HELP!'
+        statusText = 'STUCK'
+        break
+      case 'needs_attention':
+        statusColor = 0xF39C12
+        statusText = 'NEEDS YOU'
         break
       default:
         statusColor = 0x3498DB
@@ -1660,12 +1667,25 @@ export class UIScene extends Phaser.Scene {
         { label: 'SHOW SESSION', action: 'output', color: 0x3498DB, icon: '📄' },
         { label: 'STOP WORK', action: 'stop', color: 0xE74C3C, icon: '!' }
       ]
+    } else if (status === 'needs_attention') {
+      buttons = [
+        { label: 'SHOW SESSION', action: 'output', color: 0x3498DB, icon: '📄' },
+        { label: 'SEND MESSAGE', action: 'mail', color: 0x9B59B6, icon: '@' },
+        { label: 'ASSIGN WORK', action: 'sling', color: 0x2ECC71, icon: '>' },
+        { label: 'STOP WORK', action: 'stop', color: 0xE74C3C, icon: '!' }
+      ]
     } else if (status === 'stuck') {
       buttons = [
         { label: 'SHOW SESSION', action: 'output', color: 0x3498DB, icon: '📄' },
         { label: 'DISMISS AGENT', action: 'dismiss', color: 0xE74C3C, icon: '🗑' },
         { label: 'REASSIGN WORK', action: 'reassign', color: 0xF39C12, icon: '↻' },
         { label: 'MARK COMPLETE', action: 'complete', color: 0x2ECC71, icon: '✓' }
+      ]
+    } else {
+      // Fallback for any unknown status — show at least the session view
+      buttons = [
+        { label: 'SHOW SESSION', action: 'output', color: 0x3498DB, icon: '📄' },
+        { label: 'SEND MESSAGE', action: 'mail', color: 0x9B59B6, icon: '@' }
       ]
     }
 

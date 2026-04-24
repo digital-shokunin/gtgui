@@ -49,10 +49,38 @@ export class BootScene extends Phaser.Scene {
     this.generateCoffeeShop('building-refinery')               // Refinery = Coffee Shop
     this.generatePetShop('building-barracks')                  // Barracks = Pet Shop
 
-    // Penguin units (2.4x resolution: 48x56)
-    this.generatePenguin('unit-polecat-idle', 0x3498DB, 'propeller')    // Blue propeller hat
-    this.generatePenguin('unit-polecat-working', 0xF1C40F, 'hardhat')   // Yellow hard hat
-    this.generatePenguin('unit-polecat-stuck', 0xE74C3C, 'warning')     // Red warning
+    // Per-role penguin sprites — hat denotes role, animation denotes status
+    // Each role gets its own hat+color combination so kings always look the same
+    const PENGUIN_HATS = {
+      king:          { hat: 'hardhat',   color: 0xF1C40F }, // yellow hardhat
+      gentoo:        { hat: 'propeller', color: 0x3498DB }, // blue propeller
+      adelie:        { hat: 'wizard',    color: 0x9B59B6 }, // purple wizard
+      chinstrap:     { hat: 'chef',      color: 0xFFFFFF }, // white chef
+      macaroni:      { hat: 'propeller', color: 0xE74C3C }, // red propeller
+      rockhopper:    { hat: 'hardhat',   color: 0xE67E22 }, // orange hardhat
+      magellanic:    { hat: 'propeller', color: 0x2ECC71 }, // green propeller
+      humboldt:      { hat: 'hardhat',   color: 0x1ABC9C }, // teal hardhat
+      galapagos:     { hat: 'wizard',    color: 0x16A085 }, // dark teal wizard
+      african:       { hat: 'propeller', color: 0xE91E63 }, // pink propeller
+      royal:         { hat: 'crown',     color: 0xFFD700 }, // gold crown
+      snares:        { hat: 'wizard',    color: 0xF39C12 }, // orange wizard
+      fiordland:     { hat: 'hardhat',   color: 0x9B59B6 }, // purple hardhat
+      erect_crested: { hat: 'propeller', color: 0xF39C12 }, // orange propeller
+      yellow_eyed:   { hat: 'wizard',    color: 0xF1C40F }, // yellow wizard
+      little_blue:   { hat: 'hardhat',   color: 0x3498DB }, // blue hardhat
+      fairy:         { hat: 'wizard',    color: 0xE91E63 }  // pink wizard
+    }
+    for (const [role, { hat, color }] of Object.entries(PENGUIN_HATS)) {
+      this.generatePenguin(`unit-${role}`, color, hat)
+    }
+    // Generic fallback for unknown role names
+    this.generatePenguin('unit-polecat', 0x3498DB, 'propeller')
+
+    // Legacy keys (still referenced in places — keep for compat until cleaned up)
+    this.generatePenguin('unit-polecat-idle', 0x3498DB, 'propeller')
+    this.generatePenguin('unit-polecat-working', 0xF1C40F, 'hardhat')
+    this.generatePenguin('unit-polecat-stuck', 0xE74C3C, 'warning')
+
     this.generatePenguin('unit-emperor', 0xFFD700, 'crown')              // Gold crown
     this.generatePenguin('unit-refinery', 0xFFFFFF, 'chef')             // Chef hat
 

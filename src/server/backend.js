@@ -2,7 +2,7 @@ import { join } from 'path'
 import { homedir, totalmem, cpus as osCpus } from 'os'
 import {
   readdirSync, readFileSync, writeFileSync, mkdirSync, existsSync,
-  rmSync, statSync, unlinkSync, openSync, closeSync
+  rmSync, statSync, unlinkSync, openSync, closeSync, readSync
 } from 'fs'
 import { execSync } from 'child_process'
 
@@ -475,44 +475,79 @@ export class AgentTeamsBackend {
     if (existsSync(taskDir)) rmSync(taskDir, { recursive: true })
   }
 
-  // Detect if a Claude session is actively working by checking the tmux pane
-  // Claude shows ❯ prompt when idle; spinners/output when working
-  // Results are cached for 3 minutes to avoid excessive shell execs on every poll
-  _detectTmuxActivity(tmuxName, teamName) {
-    if (!this._tmuxActivityCache) this._tmuxActivityCache = {}
-    const cacheKey = `${teamName}/${tmuxName}`
-    const cached = this._tmuxActivityCache[cacheKey]
-    if (cached && Date.now() - cached.at < 180000) return cached.active
+  // Detect agent status using a layered approach:
+  //   1. Signal file: ~/.claude/agent-status/{tmuxSessionName} — touched by the
+  //      Notification hook (idle_prompt matcher) when Claude finishes processing
+  //      and is waiting for user input. If this file is newer than the JSONL
+  //      mtime → 'needs_attention'. This is the most reliable signal.
+  //   2. JSONL mtime: conversation file mtime within 3s → 'working'.
+  //   3. JSONL mtime > 5min → 'idle' (Claude process likely dead).
+  //   4. Fallback: parse last JSONL entry for stop_reason.
+  _detectAgentStatus(teamName, claudeSessionId, tmuxSessionName) {
+    if (!claudeSessionId) return 'idle'
+
+    // Signal file path (on host via bind-mounted ~/.claude/)
+    const signalFile = join(this.claudeAuthDir, 'agent-status', tmuxSessionName || '')
+
+    // JSONL path
+    const cwd = `/workspace/${teamName}`
+    const encoded = cwd.replace(/[/_]/g, '-')
+    const jsonlPath = join(this.claudeAuthDir, 'projects', encoded, `${claudeSessionId}.jsonl`)
 
     try {
-      const safeSession = tmuxName.replace(/'/g, "'\\''")
-      const cmd = `tmux capture-pane -t '${safeSession}' -p 2>/dev/null | tail -5`
-      const output = this._exec(teamName, cmd, { encoding: 'utf-8', timeout: 3000 }) || ''
-      const lines = output.trim().split('\n').filter(l => l.trim())
-      const lastLine = lines[lines.length - 1] || ''
-      let active = true
-      // The prompt line is just "❯" possibly with trailing spaces
-      if (/^❯\s*$/.test(lastLine)) active = false
-      // Status bar line (bypass permissions, shortcuts) = idle
-      else if (lastLine.includes('bypass permissions') || lastLine.includes('shortc')) active = false
-      // Separator line (▪▪▪) = idle
-      else if (/^[─▪\s]+$/.test(lastLine)) active = false
-      // Resume picker or onboarding = not working
-      else if (lastLine.includes('Resume Session') || lastLine.includes('Enter to select')) active = false
+      if (!existsSync(jsonlPath)) return 'idle'
+      const jsonlStats = statSync(jsonlPath)
+      const jsonlAgeMs = Date.now() - jsonlStats.mtimeMs
 
-      this._tmuxActivityCache[cacheKey] = { active, at: Date.now() }
-      return active
+      // Check signal file — if it exists and is NEWER than the JSONL,
+      // Claude finished its turn and is waiting for user input
+      if (tmuxSessionName && existsSync(signalFile)) {
+        const signalStats = statSync(signalFile)
+        if (signalStats.mtimeMs > jsonlStats.mtimeMs) {
+          return 'needs_attention'
+        }
+      }
+
+      // JSONL recently modified → actively processing
+      if (jsonlAgeMs < 3000) return 'working'
+
+      // JSONL stale > 5 min → Claude process likely dead
+      if (jsonlAgeMs > 300000) return 'idle'
+
+      // Middle ground (3s - 5min): parse last JSONL entry
+      const fd = openSync(jsonlPath, 'r')
+      try {
+        const size = jsonlStats.size
+        const readLen = Math.min(4096, size)
+        const buf = Buffer.alloc(readLen)
+        readSync(fd, buf, 0, readLen, Math.max(0, size - readLen))
+        const tail = buf.toString('utf-8')
+        const lines = tail.split('\n').filter(l => l.trim())
+        for (let i = lines.length - 1; i >= 0; i--) {
+          try {
+            const obj = JSON.parse(lines[i])
+            const msg = obj.message
+            if (!msg) continue
+            if (msg.role === 'assistant') {
+              if (msg.stop_reason === 'tool_use') return 'working'
+              if (msg.stop_reason === 'end_turn') return 'needs_attention'
+              if (msg.stop_reason) return 'needs_attention'
+            }
+            if (msg.role === 'user') return 'working'
+          } catch { /* skip non-JSON lines */ }
+        }
+        return 'idle'
+      } finally {
+        closeSync(fd)
+      }
     } catch {
-      this._tmuxActivityCache[cacheKey] = { active: false, at: Date.now() }
-      return false
+      return 'idle'
     }
   }
 
-  // Invalidate tmux activity cache for a specific session (e.g., when terminal closes)
-  invalidateTmuxActivityCache(tmuxName, teamName) {
-    if (!this._tmuxActivityCache) return
-    delete this._tmuxActivityCache[`${teamName}/${tmuxName}`]
-  }
+  // Backwards-compat shim — old code may still call this
+  _detectTmuxActivity() { return false }
+  invalidateTmuxActivityCache() { /* no-op — no cache */ }
 
   // ===== TEAMMATE MANAGEMENT =====
 
@@ -550,9 +585,8 @@ export class AgentTeamsBackend {
           status = 'stuck'
         }
       } else if (alive) {
-        // No task file, but session is alive — check tmux pane for activity
-        // Claude shows ❯ prompt when idle, spinners/output when working
-        status = this._detectTmuxActivity(tmuxName, teamName) ? 'working' : 'idle'
+        // No task file, but session is alive — check signal file + JSONL
+        status = this._detectAgentStatus(teamName, sInfo.claudeSessionId, tmuxName)
       }
 
       return {
