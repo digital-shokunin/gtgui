@@ -32,9 +32,32 @@ Phaser.js Club Penguin-style isometric UI for managing Claude Code agent teams r
 
 ## Container / Colony Details
 - Image: `colony-sandbox` — `claude` user (uid 1000), writable `/workspace`
+- Claude Code: native installer (standalone binary at `~/.local/bin/claude`)
 - Per-project host mounts: `~/projects/{teamName}` → `/workspace/{teamName}`
 - Resource limits: 364MB / 0.25 CPUs on 2GB/1CPU box (auto-detected)
 - Auto-update disabled: `CLAUDE_CODE_DISABLE_AUTO_UPDATE=1`
+- Tmux socket fast path: `/tmp/gtgui-tmux/{container}:/tmp/tmux-1000` (mode 0700)
+- Container pause/resume: `POST /api/rigs/:name/pause` / `resume-container`
+
+## Security & Isolation
+Full design: [`docs/SECURITY.md`](docs/SECURITY.md)
+- `~/.claude/` mounted RO — CLAUDE.md, settings.json, credentials immutable
+- tmpfs overlays on `projects/` and `teams/` — per-project conversation isolation
+- SOPS + age credential encryption — `.credentials.json.enc` decrypted per-container to tmpdir
+- Path denial in settings.json — blocks access to sensitive files even with bypassPermissions
+- Supply chain hardening: `NPM_CONFIG_IGNORE_SCRIPTS`, `PIP_REQUIRE_HASHES`, etc.
+
+## Agent Status Detection
+- Primary: `Notification` hook (`idle_prompt`) touches `~/.claude/agent-status/{tmux_session}`
+- Fallback: JSONL conversation file mtime + last-entry parsing
+- 5-minute staleness cutoff for dead sessions
+- UI states: idle (bob), working (squish+sparkle), needs_attention (red pulse), stuck (jitter)
+- Sprites denote ROLE (hat type), animations denote STATUS
+
+## Penguin Roles & Sprites
+- king = yellow hardhat, gentoo = blue propeller, adelie = purple wizard
+- chinstrap = chef, macaroni = red propeller, rockhopper = orange hardhat
+- emperor = gold crown (dedicated HQ sprite)
 
 ## Known Pain Points
 - CSS alignment issues are recurring — use flexbox/grid consistently, test with long agent names

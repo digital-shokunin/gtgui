@@ -76,11 +76,65 @@ export class AgentTeamsBackend {
     const tmuxSocketHostDir = join(this.tmuxSocketDir, name)
     mkdirSync(tmuxSocketHostDir, { recursive: true, mode: 0o700 })
 
+    // Per-project conversation isolation: encode the CWD path the same way
+    // Claude Code does (replace / and _ with -) to find the right subdir
+    const encodedCwd = `/workspace/${teamName}`.replace(/[/_]/g, '-')
+    const projectConvDir = join(this.claudeAuthDir, 'projects', encodedCwd)
+    const teamDir = join(this.claudeAuthDir, 'teams', teamName)
+    mkdirSync(projectConvDir, { recursive: true })
+    mkdirSync(join(this.claudeAuthDir, 'agent-status'), { recursive: true, mode: 0o700 })
+    mkdirSync(teamDir, { recursive: true })
+
+    // Decrypt credentials into a per-container tmpdir (never stored as plaintext
+    // on persistent disk — /tmp is typically tmpfs, cleaned on reboot)
+    const credsTmpDir = `/tmp/gtgui-creds/${name}`
+    mkdirSync(credsTmpDir, { recursive: true, mode: 0o700 })
+    const encFile = join(this.claudeAuthDir, '.credentials.json.enc')
+    const credsFile = join(credsTmpDir, '.credentials.json')
+    if (existsSync(encFile)) {
+      try {
+        const ageKeyFile = join(this.claudeAuthDir, 'age-key.txt')
+        const decrypted = execSync(
+          `SOPS_AGE_KEY_FILE=${JSON.stringify(ageKeyFile)} sops -d --output-type json ${JSON.stringify(encFile)}`,
+          { encoding: 'utf-8', timeout: 5000 }
+        )
+        writeFileSync(credsFile, decrypted, { mode: 0o600 })
+        console.log(`[docker] Decrypted credentials for ${name}`)
+      } catch (e) {
+        console.error(`[docker] Failed to decrypt credentials for ${name}:`, e.message)
+        // Fall back to unencrypted if available
+        const plainFile = join(this.claudeAuthDir, '.credentials.json')
+        if (existsSync(plainFile)) {
+          execSync(`cp ${JSON.stringify(plainFile)} ${JSON.stringify(credsFile)} && chmod 600 ${JSON.stringify(credsFile)}`)
+        }
+      }
+    } else {
+      // No encrypted file — use plaintext directly
+      const plainFile = join(this.claudeAuthDir, '.credentials.json')
+      if (existsSync(plainFile)) {
+        execSync(`cp ${JSON.stringify(plainFile)} ${JSON.stringify(credsFile)} && chmod 600 ${JSON.stringify(credsFile)}`)
+      }
+    }
+
     // Build docker run args
+    // ISOLATION MODEL:
+    //   1. ~/.claude/ mounted RO — CLAUDE.md, settings.json protected from
+    //      modification (prevents prompt injection + settings tampering)
+    //   2. .credentials.json from per-container decrypted tmpdir (SOPS + age)
+    //   3. tmpfs overlays on projects/ and teams/ hide ALL shared data
+    //   4. Only THIS project's conversation dir and team dir are visible
+    //   5. agent-status/ shared RW — status signals visible to backend
+    //   6. Credentials via env vars (-e GH_TOKEN) — not in prompt context
     const args = [
       'docker', 'run', '-d',
       '--name', name,
-      '-v', `${this.claudeAuthDir}:/home/claude/.claude`,
+      '-v', `${this.claudeAuthDir}:/home/claude/.claude:ro`,
+      '-v', `${credsFile}:/home/claude/.claude/.credentials.json:ro`,
+      '--tmpfs', '/home/claude/.claude/projects:size=10m,uid=1000,gid=1000,mode=700',
+      '--tmpfs', '/home/claude/.claude/teams:size=1m,uid=1000,gid=1000,mode=700',
+      '-v', `${projectConvDir}:/home/claude/.claude/projects/${encodedCwd}`,
+      '-v', `${join(this.claudeAuthDir, 'agent-status')}:/home/claude/.claude/agent-status`,
+      '-v', `${teamDir}:/home/claude/.claude/teams/${teamName}`,
       '-v', `${join(homedir(), '.claude.json')}:/home/claude/.claude.json`,
       '-v', `${hostProjectDir}:${containerProjectDir}`,
       '-v', `${tmuxSocketHostDir}:/tmp/tmux-1000`,
@@ -104,6 +158,7 @@ export class AgentTeamsBackend {
 
     execSync(args.map(a => a.includes(' ') ? JSON.stringify(a) : a).join(' '))
     console.log(`[docker] Started container: ${name}`)
+
     this._ensureContainerOnboarding(name)
   }
 
