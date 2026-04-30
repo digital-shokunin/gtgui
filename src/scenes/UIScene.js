@@ -3452,7 +3452,8 @@ export class UIScene extends Phaser.Scene {
       const statusDot = this.add.graphics()
       const colonyStatus = this.getColonyStatus(colony)
       const dotColor = colonyStatus === 'stuck' ? 0xE74C3C :
-                       colonyStatus === 'working' ? 0xF39C12 : 0x2ECC71
+                       colonyStatus === 'needs_attention' ? 0xF39C12 :
+                       colonyStatus === 'working' ? 0x2ECC71 : 0x3498DB
       statusDot.fillStyle(0x000000, 0.3)
       statusDot.fillCircle(20, y + buttonHeight/2 + 1, 5)
       statusDot.fillStyle(dotColor, 1)
@@ -3516,17 +3517,41 @@ export class UIScene extends Phaser.Scene {
         }
       })
 
-      // Docker whale icon — replace count badge with whale+count when enabled
       const elements = [btn, statusDot, label, count, zone]
+
+      // Docker: whale icon + pause/resume toggle
       if (this.dockerStatus?.enabled && !colony.isHub) {
         const containerInfo = this.dockerStatus.containers?.[colony.name]
         const isRunning = containerInfo?.running || false
-        // Replace the status dot with a whale icon
+
+        // Whale icon replaces status dot
         statusDot.clear()
         const whale = this.add.text(20, y + buttonHeight/2 - 1, '🐳', {
           font: '9px Fredoka'
         }).setOrigin(0.5).setAlpha(isRunning ? 1 : 0.3)
         elements.push(whale)
+
+        // Pause/resume toggle on the right edge
+        const toggleBtn = this.add.text(width - 8, y + buttonHeight/2 - 1, isRunning ? '⏸' : '▶', {
+          font: '10px Fredoka',
+          fill: isRunning ? '#F39C12' : '#2ECC71'
+        }).setOrigin(1, 0.5).setInteractive({ useHandCursor: true })
+        toggleBtn.on('pointerup', async (pointer) => {
+          pointer.event.stopPropagation()
+          try {
+            if (isRunning) {
+              await this.api.pauseRig(colony.name)
+            } else {
+              await this.api.resumeRigContainer(colony.name)
+            }
+            this.refreshDockerStatus()
+          } catch (e) {
+            console.error('Pause/resume failed:', e.message)
+          }
+        })
+        // Hide the count badge since toggle takes its space
+        count.setVisible(false)
+        elements.push(toggleBtn)
       }
 
       this.colonyButtons.add(elements)
@@ -3552,6 +3577,7 @@ export class UIScene extends Phaser.Scene {
     )
 
     if (colonyPolecats.some(p => p.status === 'stuck')) return 'stuck'
+    if (colonyPolecats.some(p => p.status === 'needs_attention')) return 'needs_attention'
     if (colonyPolecats.some(p => p.status === 'working')) return 'working'
     return 'idle'
   }

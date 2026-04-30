@@ -56,9 +56,13 @@ const PENGUIN_NAMES = [
 ]
 
 function getNextPenguinName(teamName) {
-  const existing = Object.keys(backend._getSessionMap(teamName))
-  // First agent in a project is always the king (lead)
+  const sessionMap = backend._getSessionMap(teamName)
+  const existing = Object.keys(sessionMap)
+  // First agent is always the king. If king doesn't exist OR is dead, return king
+  // so it gets (re)spawned instead of creating a gentoo.
   if (!existing.includes(KING_PENGUIN)) return KING_PENGUIN
+  const kingTmux = sessionMap[KING_PENGUIN]?.tmuxSession || backend._tmuxName(teamName, KING_PENGUIN)
+  if (!backend.isTmuxSessionAlive(kingTmux, { teamName })) return KING_PENGUIN
   for (const name of PENGUIN_NAMES) {
     if (!existing.includes(name)) return name
   }
@@ -503,6 +507,19 @@ app.post('/api/rigs/:name/polecats', (req, res) => {
   }
 
   try {
+    // If this agent has a prior session with a claudeSessionId, resume it
+    // instead of spawning fresh (e.g. dead king being revived)
+    const existingMap = backend._getSessionMap(name)
+    const existingInfo = existingMap[memberName]
+    if (existingInfo?.claudeSessionId && !backend.isTmuxSessionAlive(
+      existingInfo.tmuxSession || backend._tmuxName(name, memberName), { teamName: name }
+    )) {
+      backend.resumeSession(name, memberName)
+      multiplayer.broadcastStateUpdate({ event: 'polecat:spawned', rig: name, polecat: memberName })
+      addActivityEvent('agent_resumed', { agent: memberName, rig: name }, req.session?.passport?.user)
+      return res.json({ success: true, name: memberName, resumed: true })
+    }
+
     const result = backend.spawnTeammate(name, memberName, cwd || null)
 
     // Also spawn the tmux session so the agent is immediately connectable
