@@ -1,19 +1,18 @@
 FROM ubuntu:24.04
 
-# System deps + locale support for Unicode box-drawing characters
+# System deps + locale + useful tools for agents
 RUN apt-get update && apt-get install -y --no-install-recommends \
     tmux curl git openssh-client ca-certificates locales gnupg \
+    jq python3 \
     && curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
     && apt-get install -y nodejs \
+    && apt-get upgrade -y \
     && rm -rf /var/lib/apt/lists/* \
     && sed -i '/en_US.UTF-8/s/^# //g' /etc/locale.gen \
     && locale-gen
 
 ENV LANG=en_US.UTF-8
 ENV LC_ALL=en_US.UTF-8
-
-# Install Claude Code CLI
-RUN npm install -g @anthropic-ai/claude-code
 
 # Create non-root claude user with uid 1000 to match host claude user
 # This ensures mounted .claude files (credentials, settings, skills) are readable
@@ -25,19 +24,24 @@ ENV NPM_CONFIG_AUDIT_LEVEL=critical
 ENV PIP_REQUIRE_HASHES=true
 ENV PIP_NO_CACHE_DIR=true
 
-# Disable Claude Code auto-update (global npm install is root-owned;
-# version is pinned at image build time, update via image rebuild)
+# Disable Claude Code auto-update (version pinned at image build time)
 ENV CLAUDE_CODE_DISABLE_AUTO_UPDATE=1
 
-# Deny sensitive paths via Claude config (applied at runtime via mount)
-# ~/.claude/settings.json mounted read-only from host
+# Native installer puts claude at ~/.local/bin/claude
+ENV PATH="/home/claude/.local/bin:${PATH}"
 
 RUN mkdir /workspace && chown claude:claude /workspace
 
 USER claude
 
+# Install Claude Code via native installer (standalone binary, no npm)
+RUN curl -fsSL https://claude.ai/install.sh | bash
+
 # Pre-complete Claude Code onboarding so theme picker doesn't appear in terminal
 RUN echo '{"hasCompletedOnboarding":true,"theme":"dark"}' > /home/claude/.claude.json
+
+# Deny sensitive paths — agents shouldn't read/modify auth or other projects' data
+# Applied via ~/.claude/settings.json (bind-mounted read-only from host at runtime)
 
 WORKDIR /workspace
 

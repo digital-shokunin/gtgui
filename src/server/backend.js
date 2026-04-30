@@ -72,8 +72,9 @@ export class AgentTeamsBackend {
     const containerProjectDir = `/workspace/${teamName}`
 
     // Create host-side tmux socket dir so GTGUI can attach without docker exec
+    // tmux requires 0700 on its socket directory
     const tmuxSocketHostDir = join(this.tmuxSocketDir, name)
-    mkdirSync(tmuxSocketHostDir, { recursive: true })
+    mkdirSync(tmuxSocketHostDir, { recursive: true, mode: 0o700 })
 
     // Build docker run args
     const args = [
